@@ -7,6 +7,7 @@ import numpy as np
 
 from midi2it import encode_it_text, write_it, convert_midi_to_it, FluidSynth
 
+# One-step tolerance accounts for float rounding during normalization->int16 conversion.
 NEAR_MAX_INT16 = 32766
 NEAR_MIN_INT16 = -32766
 

@@ -8,6 +8,7 @@ import ctypes.util
 
 # --- IT Format Constants ---
 NUM_CHANNELS = 64
+MAX_INT16 = 32767.0
 
 # --- FluidSynth Interface ---
 class FluidSynth:
@@ -110,7 +111,7 @@ class FluidSynth:
         mono = data.mean(axis=1)
         peak = np.max(np.abs(mono))
         if peak > 0:
-            mono = mono * (32767.0 / peak)
+            mono = mono * (MAX_INT16 / peak)
         mono = np.clip(mono, -32768, 32767).astype(np.int16)
         
         return mono.tobytes()
