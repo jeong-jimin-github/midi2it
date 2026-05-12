@@ -32,7 +32,8 @@ jobs:
         id: tag
         shell: pwsh
         run: |
-          $tag = "build-$((Get-Date).ToUniversalTime().ToString('yyyyMMdd-HHmmss'))"
+          $shortSha = $env:GITHUB_SHA.Substring(0, 7)
+          $tag = "build-$((Get-Date).ToUniversalTime().ToString('yyyyMMdd-HHmmss'))-$shortSha"
           "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
 
       - name: Create release and upload EXE
