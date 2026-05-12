@@ -118,6 +118,10 @@ class FluidSynth:
             self.fs.delete_fluid_settings(self.settings)
 
 # --- IT Writer ---
+def encode_it_text(text, length):
+    return text.encode('ascii', errors='replace')[:length].ljust(length, b'\x00')
+
+
 def write_it(filename, title, samples, patterns, orders, initial_tempo=125):
     # patterns: list of packed pattern bytes
     # orders: list of pattern indices
@@ -153,7 +157,7 @@ def write_it(filename, title, samples, patterns, orders, initial_tempo=125):
     with open(filename, 'wb') as f:
         # 1. Main Header
         f.write(b"IMPM")
-        f.write(title.encode('ascii')[:26].ljust(26, b'\x00'))
+        f.write(encode_it_text(title, 26))
         f.write(struct.pack("<H", 0x1004)) # PHilite
         f.write(struct.pack("<H", num_orders))
         f.write(struct.pack("<H", 0)) # InsNum
@@ -197,7 +201,7 @@ def write_it(filename, title, samples, patterns, orders, initial_tempo=125):
             f.write(struct.pack("B", 64)) # Global Vol
             f.write(struct.pack("B", 0x01 | 0x02)) # Flags: 1=Sample exists, 2=16-bit
             f.write(struct.pack("B", 64)) # Default Vol
-            f.write(s['name'].encode('ascii')[:26].ljust(26, b'\x00'))
+            f.write(encode_it_text(s['name'], 26))
             f.write(b"\x01") # Convert (signed)
             f.write(struct.pack("B", 32)) # Default Pan
             length = len(s['data']) // 2 # 16-bit samples
