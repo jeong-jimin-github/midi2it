@@ -63,7 +63,7 @@ class FluidSynth:
         if not self.fs:
             if os.name == "nt":
                 raise ImportError(
-                    "FluidSynth library not found. Ensure fluidsynth.dll (or libfluidsynth-*.dll) is installed and in PATH."
+                    "FluidSynth library not found. Ensure fluidsynth.dll (or libfluidsynth-*.dll) is in PATH, next to midi2it.exe/midi2it.py, or in a standard FluidSynth install directory."
                 )
             raise ImportError("FluidSynth library not found. Install it with 'brew install fluidsynth' or equivalent.")
         
