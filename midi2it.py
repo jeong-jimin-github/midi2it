@@ -1,4 +1,5 @@
 import os
+import sys
 import struct
 import mido
 import numpy as np
@@ -10,22 +11,61 @@ NUM_CHANNELS = 64
 
 # --- FluidSynth Interface ---
 class FluidSynth:
-    def __init__(self, sf2_path):
-        lib = ctypes.util.find_library('fluidsynth')
-        if not lib:
+    @staticmethod
+    def _library_candidates():
+        candidates = []
+        for name in ("fluidsynth", "libfluidsynth-3", "libfluidsynth-2"):
+            lib = ctypes.util.find_library(name)
+            if lib:
+                candidates.append(lib)
+
+        if os.name == "nt":
+            dll_names = (
+                "fluidsynth.dll",
+                "libfluidsynth.dll",
+                "libfluidsynth-3.dll",
+                "libfluidsynth-2.dll",
+            )
+            candidates.extend(dll_names)
+
+            search_dirs = [os.path.dirname(os.path.abspath(__file__))]
+            if getattr(sys, "frozen", False):
+                search_dirs.insert(0, os.path.dirname(sys.executable))
+
+            for folder in search_dirs:
+                for dll_name in dll_names:
+                    candidates.append(os.path.join(folder, dll_name))
+
+            for env_var in ("ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA"):
+                base = os.environ.get(env_var)
+                if not base:
+                    continue
+                for dll_name in dll_names:
+                    candidates.append(os.path.join(base, "FluidSynth", "bin", dll_name))
+        else:
             # Try common Homebrew paths for macOS
-            paths = [
+            candidates.extend([
                 "/opt/homebrew/lib/libfluidsynth.dylib",
                 "/usr/local/lib/libfluidsynth.dylib",
-            ]
-            for path in paths:
-                if os.path.exists(path):
-                    lib = path
-                    break
-                    
-        if not lib:
+            ])
+
+        return candidates
+
+    def __init__(self, sf2_path):
+        self.fs = None
+        for lib in self._library_candidates():
+            try:
+                self.fs = ctypes.CDLL(lib)
+                break
+            except OSError:
+                continue
+
+        if not self.fs:
+            if os.name == "nt":
+                raise ImportError(
+                    "FluidSynth library not found. Ensure fluidsynth.dll (or libfluidsynth-*.dll) is installed and in PATH."
+                )
             raise ImportError("FluidSynth library not found. Install it with 'brew install fluidsynth' or equivalent.")
-        self.fs = ctypes.CDLL(lib)
         
         # Define function signatures to prevent segfaults on 64-bit systems
         self.fs.new_fluid_settings.restype = ctypes.c_void_p
@@ -72,8 +112,9 @@ class FluidSynth:
         return mono.tobytes()
 
     def __del__(self):
-        if hasattr(self, 'fs'):
+        if hasattr(self, 'fs') and hasattr(self, 'synth'):
             self.fs.delete_fluid_synth(self.synth)
+        if hasattr(self, 'fs') and hasattr(self, 'settings'):
             self.fs.delete_fluid_settings(self.settings)
 
 # --- IT Writer ---
@@ -353,4 +394,3 @@ if __name__ == "__main__":
             print(f"Error: {e}")
             import traceback
             traceback.print_exc()
-

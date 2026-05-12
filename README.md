@@ -29,7 +29,7 @@ sudo apt-get install fluidsynth
 ```
 
 **Windows:**  
-Download and install the FluidSynth library DLL, and ensure it is accessible in your `PATH`. Refer to the official FluidSynth documentation for installation instructions.
+Download and install the FluidSynth library DLL (`fluidsynth.dll` or `libfluidsynth-*.dll`), and ensure it is accessible in your `PATH` (or next to `midi2it.exe`). Refer to the official FluidSynth documentation for installation instructions.
 
 ## Installation
 
