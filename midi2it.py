@@ -98,7 +98,7 @@ class FluidSynth:
         num_samples = int(self.sample_rate * duration_sec)
         
         self.fs.fluid_synth_program_select(self.synth, 0, self.sfid, bank, prog)
-        self.fs.fluid_synth_noteon(self.synth, 0, note, 100)
+        self.fs.fluid_synth_noteon(self.synth, 0, note, 127)
         
         buf = (ctypes.c_short * (num_samples * 2))()
         self.fs.fluid_synth_write_s16(self.synth, num_samples, buf, 0, 2, buf, 1, 2)
@@ -106,8 +106,12 @@ class FluidSynth:
         self.fs.fluid_synth_noteoff(self.synth, 0, note)
         
         # Convert to mono 16-bit
-        data = np.frombuffer(buf, dtype=np.int16).reshape(-1, 2)
-        mono = data.mean(axis=1).astype(np.int16)
+        data = np.frombuffer(buf, dtype=np.int16).reshape(-1, 2).astype(np.float32)
+        mono = data.mean(axis=1)
+        peak = np.max(np.abs(mono))
+        if peak > 0:
+            mono = mono * (32767.0 / peak)
+        mono = np.clip(mono, -32768, 32767).astype(np.int16)
         
         return mono.tobytes()
 
