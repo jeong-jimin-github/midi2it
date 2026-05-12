@@ -19,6 +19,24 @@ class EncodeItTextTests(unittest.TestCase):
 
 
 class TempoTests(unittest.TestCase):
+    def test_write_it_uses_max_mix_volume(self):
+        with tempfile.NamedTemporaryFile(suffix=".it", delete=False) as tmp:
+            it_path = tmp.name
+
+        try:
+            write_it(
+                it_path,
+                "volume-test",
+                samples=[{"name": "sample", "data": b"\x00\x00"}],
+                patterns=[b"\x00"],
+                orders=[0],
+            )
+            with open(it_path, "rb") as f:
+                data = f.read(64)
+            self.assertEqual(data[49], 128)
+        finally:
+            Path(it_path).unlink(missing_ok=True)
+
     def test_write_it_uses_initial_tempo(self):
         with tempfile.NamedTemporaryFile(suffix=".it", delete=False) as tmp:
             it_path = tmp.name

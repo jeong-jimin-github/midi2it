@@ -168,7 +168,7 @@ def write_it(filename, title, samples, patterns, orders, initial_tempo=125):
         f.write(struct.pack("<H", 0x0001)) # Flags (Stereo)
         f.write(struct.pack("<H", 0x0000)) # Special
         f.write(struct.pack("B", 128)) # Global Vol
-        f.write(struct.pack("B", 48))  # Mix Vol
+        f.write(struct.pack("B", 128)) # Mix Vol
         f.write(struct.pack("B", 6))   # Initial Speed
         tempo = int(round(initial_tempo))
         if tempo < 32:
