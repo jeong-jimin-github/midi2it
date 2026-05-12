@@ -8,7 +8,30 @@ midi2it is a Python tool for converting MIDI (.mid) files and SF2 soundfonts int
 - Support for SF2 soundfonts
 - 100% Python implementation
 
-## Usage
+## Requirements
+
+- Python 3.7+
+- See `requirements.txt` for Python dependencies (`mido`, `numpy`)
+- **FluidSynth C library** (required for soundfont rendering; install separately, see below)
+
+### Installing FluidSynth
+
+The FluidSynth library must be installed on your system for this tool to work.
+
+**macOS (using Homebrew):**
+```bash
+brew install fluidsynth
+```
+
+**Linux (Debian/Ubuntu):**
+```bash
+sudo apt-get install fluidsynth
+```
+
+**Windows:**  
+Download and install the FluidSynth library DLL, and ensure it is accessible in your `PATH`. Refer to the official FluidSynth documentation for installation instructions.
+
+## Installation
 
 1. Clone this repository:
    ```bash
@@ -16,21 +39,21 @@ midi2it is a Python tool for converting MIDI (.mid) files and SF2 soundfonts int
    cd midi2it
    ```
 
-2. Install requirements (if any are required; see requirements.txt if it exists):
+2. Install Python dependencies:
    ```bash
    pip install -r requirements.txt
    ```
 
-3. Run the tool to convert a MIDI file:
-   ```bash
-   python midi2it.py input.mid input.sf2 output.it
-   ```
-   Replace `input.mid` with your MIDI file, `input.sf2` with your SF2 soundfont, and `output.it` with the desired output file name.
+## Usage
 
-## Requirements
+You need a MIDI file (`.mid`) and an SF2 soundfont to use this tool.
 
-- Python 3.7+
-- Additional dependencies may be specified in `requirements.txt`
+```bash
+python midi2it.py input.mid input.sf2 [output.it]
+```
+- `input.mid`: Your MIDI file
+- `input.sf2`: SoundFont file
+- `output.it`: Output filename (optional, defaults to `output.it`)
 
 ## License
 
