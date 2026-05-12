@@ -128,19 +128,10 @@ def encode_it_text(text, length):
 
 
 def midi_velocity_to_it_volume(velocity):
-    v = int(velocity)
-    if v < 0:
-        v = 0
-    if v > 127:
-        v = 127
+    v = max(0, min(int(velocity), 127))
     if v == 0:
         return 0
-    vol = int(round(((v / 127.0) ** 0.5) * 64))
-    if vol < 1:
-        vol = 1
-    if vol > 64:
-        vol = 64
-    return vol
+    return int(round(((v / 127.0) ** 0.5) * 64))
 
 
 def write_it(filename, title, samples, patterns, orders, initial_tempo=125):
