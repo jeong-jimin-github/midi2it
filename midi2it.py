@@ -170,7 +170,12 @@ def write_it(filename, title, samples, patterns, orders, initial_tempo=125):
         f.write(struct.pack("B", 128)) # Global Vol
         f.write(struct.pack("B", 48))  # Mix Vol
         f.write(struct.pack("B", 6))   # Initial Speed
-        f.write(struct.pack("B", 125)) # Initial Tempo
+        tempo = int(round(initial_tempo))
+        if tempo < 32:
+            tempo = 32
+        if tempo > 255:
+            tempo = 255
+        f.write(struct.pack("B", tempo)) # Initial Tempo
         f.write(struct.pack("B", 128)) # Pan Sep
         f.write(struct.pack("B", 0))   # PWD
         f.write(struct.pack("<H", 0))  # MsgLen
@@ -228,6 +233,13 @@ def write_it(filename, title, samples, patterns, orders, initial_tempo=125):
             f.seek(smp_data_ptrs[i])
             f.write(s['data'])
 
+def get_initial_bpm(mid):
+    for msg in mido.merge_tracks(mid.tracks):
+        if msg.type == 'set_tempo':
+            return int(round(mido.tempo2bpm(msg.tempo)))
+    return 120
+
+
 def convert_midi_to_it(midi_path, sf2_path, output_path):
     print(f"Loading MIDI: {midi_path}")
     mid = mido.MidiFile(midi_path)
@@ -284,6 +296,8 @@ def convert_midi_to_it(midi_path, sf2_path, output_path):
         
     if not all_instruments:
         all_instruments.append((0, 0, 60, False))
+
+    initial_bpm = get_initial_bpm(mid)
 
     print(f"Loading SF2 and rendering samples...")
     fs = FluidSynth(sf2_path)
@@ -383,7 +397,7 @@ def convert_midi_to_it(midi_path, sf2_path, output_path):
     orders = [i for i in range(num_patterns)]
     
     print(f"Writing IT file: {output_path}")
-    write_it(output_path, os.path.basename(midi_path)[:26], samples, patterns, orders)
+    write_it(output_path, os.path.basename(midi_path)[:26], samples, patterns, orders, initial_tempo=initial_bpm)
     print("Done!")
 
 if __name__ == "__main__":
