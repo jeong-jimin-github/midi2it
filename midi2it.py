@@ -188,38 +188,54 @@ def convert_midi_to_it(midi_path, sf2_path, output_path):
     mid = mido.MidiFile(midi_path)
     
     # Track which (bank, program) is used on which channel
-    # Default to (0, 0) for melodic, (128, 0) for channel 10
     channel_programs = {i: (0, 0) for i in range(16)}
     channel_programs[9] = (128, 0) # MIDI channel 10 is index 9
     
-    melodic_instruments = {} # (bank, program) -> id
-    drum_notes = {} # note -> id
+    melodic_notes = {} # (bank, program) -> set of notes
+    drum_notes_used = set()
     
-    # First pass: find all instruments and drum notes used
+    # First pass: find all instruments and notes used
     for track in mid.tracks:
+        curr_channel_programs = {i: (0, 0) for i in range(16)}
+        curr_channel_programs[9] = (128, 0)
         for msg in track:
             if msg.type == 'program_change':
                 bank = 128 if msg.channel == 9 else 0
-                channel_programs[msg.channel] = (bank, msg.program)
+                curr_channel_programs[msg.channel] = (bank, msg.program)
             elif msg.type == 'note_on' and msg.velocity > 0:
                 if msg.channel == 9:
-                    if msg.note not in drum_notes:
-                        drum_notes[msg.note] = 0 # Will assign ID later
+                    drum_notes_used.add(msg.note)
                 else:
-                    prog = channel_programs[msg.channel]
-                    if prog not in melodic_instruments:
-                        melodic_instruments[prog] = 0 # Will assign ID later
+                    prog = curr_channel_programs[msg.channel]
+                    if prog not in melodic_notes:
+                        melodic_notes[prog] = set()
+                    melodic_notes[prog].add(msg.note)
 
-    # Assign IDs: melodic first, then drums
+    # Assign IDs: multisampled melodic first, then drums
     all_instruments = [] # list of (bank, prog, note, is_drum)
+    melodic_sample_map = {} # (bank, prog, base_note) -> sample_id (1-based)
+    drum_sample_map = {} # note -> sample_id (1-based)
     
-    for prog, _ in sorted(melodic_instruments.items()):
-        melodic_instruments[prog] = len(all_instruments) + 1
-        all_instruments.append((prog[0], prog[1], 60, False))
+    base_note_options = [36, 60, 84, 108]
+    
+    for prog in sorted(melodic_notes.keys()):
+        for m_note in sorted(melodic_notes[prog]):
+            # Find closest base note
+            best_base = 60
+            min_dist = 999
+            for b in base_note_options:
+                if abs(m_note - b) < min_dist:
+                    min_dist = abs(m_note - b)
+                    best_base = b
+            
+            key = (prog[0], prog[1], best_base)
+            if key not in melodic_sample_map:
+                all_instruments.append((prog[0], prog[1], best_base, False))
+                melodic_sample_map[key] = len(all_instruments)
         
-    for note in sorted(drum_notes.keys()):
-        drum_notes[note] = len(all_instruments) + 1
-        all_instruments.append((128, 0, note, True))
+    for d_note in sorted(drum_notes_used):
+        all_instruments.append((128, 0, d_note, True))
+        drum_sample_map[d_note] = len(all_instruments)
         
     if not all_instruments:
         all_instruments.append((0, 0, 60, False))
@@ -228,9 +244,8 @@ def convert_midi_to_it(midi_path, sf2_path, output_path):
     fs = FluidSynth(sf2_path)
     samples = []
     for bank, prog, note, is_drum in all_instruments:
-        name = f"Drum {note}" if is_drum else f"Instr {prog}"
+        name = f"Drum {note}" if is_drum else f"Instr {prog}@{note}"
         print(f"  Recording {name}...")
-        # For drums, we render the specific note. For melodic, we render C5 (60).
         data = fs.render_sample(bank, prog, note=note)
         samples.append({'name': name, 'data': data})
 
@@ -256,17 +271,25 @@ def convert_midi_to_it(midi_path, sf2_path, output_path):
             if row_idx >= max_rows: continue
             
             if msg.channel == 9:
-                instr_idx = drum_notes.get(msg.note, 1)
-                note_to_play = 60 # In IT, we play at C5 because sample is pre-rendered at correct pitch
+                instr_idx = drum_sample_map.get(msg.note, 1)
+                note_to_play = 60 # Played at original pitch
             else:
                 prog = current_channel_programs[msg.channel]
-                instr_idx = melodic_instruments.get(prog, 1)
-                note_to_play = msg.note
+                # Find the sample used for this note
+                best_base = 60
+                min_dist = 999
+                for b in base_note_options:
+                    if abs(msg.note - b) < min_dist:
+                        min_dist = abs(msg.note - b)
+                        best_base = b
+                
+                instr_idx = melodic_sample_map.get((prog[0], prog[1], best_base), 1)
+                # Formula: N = M - M_rec + 60
+                note_to_play = msg.note - best_base + 60
             
+            if note_to_play < 0: note_to_play = 0
             if note_to_play > 119: note_to_play = 119
             
-            # Map MIDI channel to IT channel (0-63)
-            # Drums on 10 -> IT 10, others offset if needed.
             it_chan = msg.channel
             row_data[row_idx].append((it_chan, note_to_play, instr_idx))
 
