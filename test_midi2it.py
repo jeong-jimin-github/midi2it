@@ -5,7 +5,7 @@ from unittest.mock import patch
 import mido
 import numpy as np
 
-from midi2it import encode_it_text, write_it, convert_midi_to_it, FluidSynth
+from midi2it import encode_it_text, write_it, convert_midi_to_it, FluidSynth, midi_velocity_to_it_volume
 
 # One-step tolerance accounts for float rounding during normalization->int16 conversion.
 NEAR_MAX_INT16 = 32766
@@ -21,6 +21,18 @@ class EncodeItTextTests(unittest.TestCase):
 
     def test_pads_short_strings(self):
         self.assertEqual(encode_it_text("abc", 5), b"abc\x00\x00")
+
+
+class VelocityMappingTests(unittest.TestCase):
+    def test_velocity_mapping_clamps_bounds(self):
+        self.assertEqual(midi_velocity_to_it_volume(-1), 0)
+        self.assertEqual(midi_velocity_to_it_volume(0), 0)
+        self.assertEqual(midi_velocity_to_it_volume(127), 64)
+        self.assertEqual(midi_velocity_to_it_volume(200), 64)
+
+    def test_velocity_mapping_boosts_mid_velocities(self):
+        self.assertEqual(midi_velocity_to_it_volume(64), 45)
+        self.assertEqual(midi_velocity_to_it_volume(100), 57)
 
 
 class TempoTests(unittest.TestCase):

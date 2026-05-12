@@ -127,6 +127,22 @@ def encode_it_text(text, length):
     return text.encode('ascii', errors='replace')[:length].ljust(length, b'\x00')
 
 
+def midi_velocity_to_it_volume(velocity):
+    v = int(velocity)
+    if v < 0:
+        v = 0
+    if v > 127:
+        v = 127
+    if v == 0:
+        return 0
+    vol = int(round(((v / 127.0) ** 0.5) * 64))
+    if vol < 1:
+        vol = 1
+    if vol > 64:
+        vol = 64
+    return vol
+
+
 def write_it(filename, title, samples, patterns, orders, initial_tempo=125):
     # patterns: list of packed pattern bytes
     # orders: list of pattern indices
@@ -391,10 +407,7 @@ def convert_midi_to_it(midi_path, sf2_path, output_path):
                 p_bytes.append(note)
                 p_bytes.append(instr)
                 
-                vol_it = int(velocity * 64 / 127)
-                if vol_it < 0: vol_it = 0
-                if vol_it > 64: vol_it = 64
-                p_bytes.append(vol_it)
+                p_bytes.append(midi_velocity_to_it_volume(velocity))
             
             p_bytes.append(0)
         patterns.append(bytes(p_bytes))
