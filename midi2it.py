@@ -77,7 +77,7 @@ class FluidSynth:
             self.fs.delete_fluid_settings(self.settings)
 
 # --- IT Writer ---
-def write_it(filename, title, samples, patterns, orders):
+def write_it(filename, title, samples, patterns, orders, initial_tempo=125):
     # patterns: list of packed pattern bytes
     # orders: list of pattern indices
     
@@ -291,7 +291,7 @@ def convert_midi_to_it(midi_path, sf2_path, output_path):
             if note_to_play > 119: note_to_play = 119
             
             it_chan = msg.channel
-            row_data[row_idx].append((it_chan, note_to_play, instr_idx))
+            row_data[row_idx].append((it_chan, note_to_play, instr_idx, msg.velocity))
 
     # Pack patterns
     actual_last_row = 0
@@ -309,8 +309,8 @@ def convert_midi_to_it(midi_path, sf2_path, output_path):
             row_idx = p * 64 + r
             notes_in_row = row_data[row_idx] if row_idx < len(row_data) else []
             
-            seen_channels = {} # chan -> (note, instr)
-            for it_chan, note, instr in notes_in_row:
+            seen_channels = {} # chan -> (note, instr, velocity)
+            for it_chan, note, instr, velocity in notes_in_row:
                 # If multiple notes on same channel, we'll try to find an empty IT channel (16-63)
                 final_chan = it_chan
                 if final_chan in seen_channels:
@@ -319,13 +319,18 @@ def convert_midi_to_it(midi_path, sf2_path, output_path):
                             final_chan = c
                             break
                 
-                seen_channels[final_chan] = (note, instr)
+                seen_channels[final_chan] = (note, instr, velocity)
                 
-            for it_chan, (note, instr) in sorted(seen_channels.items()):
+            for it_chan, (note, instr, velocity) in sorted(seen_channels.items()):
                 p_bytes.append((it_chan & 0x3F) + 1 | 0x80)
-                p_bytes.append(0x03)
+                p_bytes.append(0x07) # note + instr + vol
                 p_bytes.append(note)
                 p_bytes.append(instr)
+                
+                vol_it = int(velocity * 64 / 127)
+                if vol_it < 0: vol_it = 0
+                if vol_it > 64: vol_it = 64
+                p_bytes.append(vol_it)
             
             p_bytes.append(0)
         patterns.append(bytes(p_bytes))
@@ -348,3 +353,4 @@ if __name__ == "__main__":
             print(f"Error: {e}")
             import traceback
             traceback.print_exc()
+
