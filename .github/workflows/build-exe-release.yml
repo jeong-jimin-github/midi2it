@@ -1,0 +1,43 @@
+name: Build and Release EXE
+
+on:
+  push:
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Build onefile EXE
+        run: pyinstaller --onefile midi2it.py --name midi2it
+
+      - name: Generate build-time tag
+        id: tag
+        shell: pwsh
+        run: |
+          $tag = "build-$(Get-Date -AsUTC -Format 'yyyyMMdd-HHmmss')"
+          "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Create release and upload EXE
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: ${{ steps.tag.outputs.tag }}
+          files: dist/midi2it.exe
