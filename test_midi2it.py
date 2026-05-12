@@ -7,6 +7,9 @@ import numpy as np
 
 from midi2it import encode_it_text, write_it, convert_midi_to_it, FluidSynth
 
+NEAR_MAX_INT16 = 32766
+NEAR_MIN_INT16 = -32766
+
 
 class EncodeItTextTests(unittest.TestCase):
     def test_replaces_non_latin_characters(self):
@@ -132,7 +135,7 @@ class FluidSynthRenderSampleTests(unittest.TestCase):
 
         self.assertEqual(synth.fs.noteon_velocity, 127)
         rendered_i16 = np.frombuffer(rendered, dtype=np.int16)
-        self.assertTrue(np.all(rendered_i16 >= 32766))
+        self.assertTrue(np.all(rendered_i16 >= NEAR_MAX_INT16))
 
     def test_render_sample_normalization_preserves_negative_sign(self):
         synth = self._make_synth(self.FakeFS(left_value=-1000, right_value=-1000))
@@ -140,7 +143,7 @@ class FluidSynthRenderSampleTests(unittest.TestCase):
         rendered = synth.render_sample(bank=0, prog=0, note=60, duration_sec=1.0)
 
         rendered_i16 = np.frombuffer(rendered, dtype=np.int16)
-        self.assertTrue(np.all(rendered_i16 <= -32766))
+        self.assertTrue(np.all(rendered_i16 <= NEAR_MIN_INT16))
 
 
 if __name__ == "__main__":
