@@ -339,15 +339,16 @@ def convert_midi_to_it(midi_path, sf2_path, output_path):
         data = fs.render_sample(bank, prog, note=note)
         samples.append({'name': name, 'data': data})
 
-    ticks_per_row = mid.ticks_per_beat // 4
-    if ticks_per_row == 0: ticks_per_row = 1
+    row_resolution = 4
+    if mid.ticks_per_beat <= 0:
+        raise ValueError("Invalid MIDI ticks_per_beat")
     ts_num, ts_den = get_initial_time_signature(mid)
     rows_per_measure = max(1, int(round((ts_num * 16.0) / ts_den)))
     rows_per_pattern = 64 if (ts_num == 4 and ts_den == 4) else max(1, min(rows_per_measure * 4, 200))
     
     merged_track = mido.merge_tracks(mid.tracks)
     total_ticks = sum(msg.time for msg in merged_track)
-    max_rows = int(total_ticks / ticks_per_row) + 128
+    max_rows = int(round((total_ticks * row_resolution) / mid.ticks_per_beat)) + 128
     row_data = [[] for _ in range(max_rows)]
     
     current_channel_programs = {i: (0, 0) for i in range(16)}
@@ -360,7 +361,7 @@ def convert_midi_to_it(midi_path, sf2_path, output_path):
             bank = 128 if msg.channel == 9 else 0
             current_channel_programs[msg.channel] = (bank, msg.program)
         elif msg.type == 'note_on' and msg.velocity > 0:
-            row_idx = int(abs_tick / ticks_per_row)
+            row_idx = int(round((abs_tick * row_resolution) / mid.ticks_per_beat))
             if row_idx >= max_rows: continue
             
             if msg.channel == 9:
