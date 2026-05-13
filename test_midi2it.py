@@ -197,6 +197,28 @@ class TempoTests(unittest.TestCase):
             Path(midi_path).unlink(missing_ok=True)
             Path(out_path).unlink(missing_ok=True)
 
+    def test_convert_midi_to_it_test_mid_keeps_early_offgrid_notes_in_expected_row(self):
+        midi_path = Path(__file__).with_name("test.mid")
+        with tempfile.NamedTemporaryFile(suffix=".it", delete=False) as out_tmp:
+            out_path = out_tmp.name
+
+        try:
+            class FakeFluidSynth:
+                def __init__(self, sf2_path):
+                    self.sf2_path = sf2_path
+
+                def render_sample(self, bank, prog, note=60, duration_sec=1.0):
+                    return b"\x00\x00"
+
+            with patch("midi2it.FluidSynth", FakeFluidSynth), patch("midi2it.write_it") as mock_write:
+                convert_midi_to_it(str(midi_path), "dummy.sf2", out_path)
+
+            patterns = mock_write.call_args.args[3]
+            note_rows = self._extract_note_rows(patterns)
+            self.assertIn(23, note_rows)
+        finally:
+            Path(out_path).unlink(missing_ok=True)
+
 
 class FluidSynthRenderSampleTests(unittest.TestCase):
     class FakeFS:
