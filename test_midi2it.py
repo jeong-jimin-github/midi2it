@@ -102,6 +102,37 @@ class TempoTests(unittest.TestCase):
             Path(midi_path).unlink(missing_ok=True)
             Path(out_path).unlink(missing_ok=True)
 
+    def test_convert_midi_to_it_uses_time_signature_for_pattern_rows(self):
+        with tempfile.NamedTemporaryFile(suffix=".mid", delete=False) as midi_tmp:
+            midi_path = midi_tmp.name
+        with tempfile.NamedTemporaryFile(suffix=".it", delete=False) as out_tmp:
+            out_path = out_tmp.name
+
+        try:
+            mid = mido.MidiFile(ticks_per_beat=480)
+            track = mido.MidiTrack()
+            mid.tracks.append(track)
+            track.append(mido.MetaMessage("time_signature", numerator=3, denominator=4, time=0))
+            track.append(mido.Message("note_on", note=60, velocity=100, time=0, channel=0))
+            track.append(mido.Message("note_on", note=64, velocity=100, time=480, channel=0))
+            mid.save(midi_path)
+
+            class FakeFluidSynth:
+                def __init__(self, sf2_path):
+                    self.sf2_path = sf2_path
+
+                def render_sample(self, bank, prog, note=60, duration_sec=1.0):
+                    return b"\x00\x00"
+
+            with patch("midi2it.FluidSynth", FakeFluidSynth), patch("midi2it.write_it") as mock_write:
+                convert_midi_to_it(midi_path, "dummy.sf2", out_path)
+
+            patterns = mock_write.call_args.args[3]
+            self.assertEqual(patterns[0][0], 48)
+        finally:
+            Path(midi_path).unlink(missing_ok=True)
+            Path(out_path).unlink(missing_ok=True)
+
 
 class FluidSynthRenderSampleTests(unittest.TestCase):
     class FakeFS:

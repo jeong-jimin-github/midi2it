@@ -134,6 +134,14 @@ def midi_velocity_to_it_volume(velocity):
     return int(round(((v / 127.0) ** 0.5) * 64))
 
 
+def _pattern_entry(entry):
+    if isinstance(entry, tuple):
+        rows, data = entry
+        rows = max(1, min(int(rows), 200))
+        return rows, data
+    return 64, entry
+
+
 def write_it(filename, title, samples, patterns, orders, initial_tempo=125):
     # patterns: list of packed pattern bytes
     # orders: list of pattern indices
@@ -158,8 +166,9 @@ def write_it(filename, title, samples, patterns, orders, initial_tempo=125):
         
     pat_header_ptrs = []
     for i in range(num_patterns):
+        _, p_data = _pattern_entry(patterns[i])
         pat_header_ptrs.append(current_ptr)
-        current_ptr += 8 + len(patterns[i])
+        current_ptr += 8 + len(p_data)
         
     smp_data_ptrs = []
     for i in range(num_samples):
@@ -233,10 +242,11 @@ def write_it(filename, title, samples, patterns, orders, initial_tempo=125):
             f.write(b"\x00\x00\x00\x00") # Vi, Vp, Vt, Vr
 
         # 6. Patterns
-        for i, p_data in enumerate(patterns):
+        for i, p_entry in enumerate(patterns):
+            row_count, p_data = _pattern_entry(p_entry)
             f.seek(pat_header_ptrs[i])
             f.write(struct.pack("<H", len(p_data)))
-            f.write(struct.pack("<H", 64)) # Rows
+            f.write(struct.pack("<H", row_count))
             f.write(b"\x00" * 4) # Reserved
             f.write(p_data)
             
@@ -250,6 +260,15 @@ def get_initial_bpm(mid):
         if msg.type == 'set_tempo':
             return int(round(mido.tempo2bpm(msg.tempo)))
     return 120
+
+
+def get_initial_time_signature(mid):
+    for msg in mido.merge_tracks(mid.tracks):
+        if msg.type == 'time_signature':
+            numerator = int(msg.numerator) if msg.numerator > 0 else 4
+            denominator = int(msg.denominator) if msg.denominator > 0 else 4
+            return numerator, denominator
+    return 4, 4
 
 
 def convert_midi_to_it(midi_path, sf2_path, output_path):
@@ -322,6 +341,9 @@ def convert_midi_to_it(midi_path, sf2_path, output_path):
 
     ticks_per_row = mid.ticks_per_beat // 4
     if ticks_per_row == 0: ticks_per_row = 1
+    ts_num, ts_den = get_initial_time_signature(mid)
+    rows_per_measure = max(1, int(round((ts_num * 16.0) / ts_den)))
+    rows_per_pattern = 64 if (ts_num == 4 and ts_den == 4) else max(1, min(rows_per_measure * 4, 200))
     
     merged_track = mido.merge_tracks(mid.tracks)
     total_ticks = sum(msg.time for msg in merged_track)
@@ -369,15 +391,15 @@ def convert_midi_to_it(midi_path, sf2_path, output_path):
     for r_idx, rd in enumerate(row_data):
         if rd: actual_last_row = r_idx
     
-    num_patterns = (actual_last_row + 64) // 64
+    num_patterns = (actual_last_row + rows_per_pattern) // rows_per_pattern
     if num_patterns > 200: num_patterns = 200
     
     patterns = []
     print(f"Processing {num_patterns} patterns...")
     for p in range(num_patterns):
         p_bytes = bytearray()
-        for r in range(64):
-            row_idx = p * 64 + r
+        for r in range(rows_per_pattern):
+            row_idx = p * rows_per_pattern + r
             notes_in_row = row_data[row_idx] if row_idx < len(row_data) else []
             
             seen_channels = {} # chan -> (note, instr, velocity)
@@ -401,7 +423,7 @@ def convert_midi_to_it(midi_path, sf2_path, output_path):
                 p_bytes.append(midi_velocity_to_it_volume(velocity))
             
             p_bytes.append(0)
-        patterns.append(bytes(p_bytes))
+        patterns.append((rows_per_pattern, bytes(p_bytes)))
 
     orders = [i for i in range(num_patterns)]
     
