@@ -197,7 +197,7 @@ class TempoTests(unittest.TestCase):
             Path(midi_path).unlink(missing_ok=True)
             Path(out_path).unlink(missing_ok=True)
 
-    def test_early_notes_not_pushed_to_next_row(self):
+    def test_off_grid_notes_not_rounded_to_next_row(self):
         midi_path = Path(__file__).with_name("test.mid")
         with tempfile.NamedTemporaryFile(suffix=".it", delete=False) as out_tmp:
             out_path = out_tmp.name
