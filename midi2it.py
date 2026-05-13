@@ -8,6 +8,7 @@ import ctypes.util
 
 # --- IT Format Constants ---
 NUM_CHANNELS = 64
+NORMALIZATION_TARGET_INT16 = 32767.0
 
 # --- FluidSynth Interface ---
 class FluidSynth:
@@ -98,7 +99,7 @@ class FluidSynth:
         num_samples = int(self.sample_rate * duration_sec)
         
         self.fs.fluid_synth_program_select(self.synth, 0, self.sfid, bank, prog)
-        self.fs.fluid_synth_noteon(self.synth, 0, note, 100)
+        self.fs.fluid_synth_noteon(self.synth, 0, note, 127)
         
         buf = (ctypes.c_short * (num_samples * 2))()
         self.fs.fluid_synth_write_s16(self.synth, num_samples, buf, 0, 2, buf, 1, 2)
@@ -106,8 +107,12 @@ class FluidSynth:
         self.fs.fluid_synth_noteoff(self.synth, 0, note)
         
         # Convert to mono 16-bit
-        data = np.frombuffer(buf, dtype=np.int16).reshape(-1, 2)
-        mono = data.mean(axis=1).astype(np.int16)
+        data = np.frombuffer(buf, dtype=np.int16).reshape(-1, 2).astype(np.float32)
+        mono = data.mean(axis=1)
+        peak = np.max(np.abs(mono))
+        if peak > 0:
+            mono = mono * (NORMALIZATION_TARGET_INT16 / peak)
+        mono = np.clip(mono, -32768, 32767).astype(np.int16)
         
         return mono.tobytes()
 
@@ -120,6 +125,13 @@ class FluidSynth:
 # --- IT Writer ---
 def encode_it_text(text, length):
     return text.encode('ascii', errors='replace')[:length].ljust(length, b'\x00')
+
+
+def midi_velocity_to_it_volume(velocity):
+    v = max(0, min(int(velocity), 127))
+    if v == 0:
+        return 0
+    return int(round(((v / 127.0) ** 0.5) * 64))
 
 
 def write_it(filename, title, samples, patterns, orders, initial_tempo=125):
@@ -168,7 +180,7 @@ def write_it(filename, title, samples, patterns, orders, initial_tempo=125):
         f.write(struct.pack("<H", 0x0001)) # Flags (Stereo)
         f.write(struct.pack("<H", 0x0000)) # Special
         f.write(struct.pack("B", 128)) # Global Vol
-        f.write(struct.pack("B", 48))  # Mix Vol
+        f.write(struct.pack("B", 128)) # Mix Vol
         f.write(struct.pack("B", 6))   # Initial Speed
         tempo = int(round(initial_tempo))
         if tempo < 32:
@@ -386,10 +398,7 @@ def convert_midi_to_it(midi_path, sf2_path, output_path):
                 p_bytes.append(note)
                 p_bytes.append(instr)
                 
-                vol_it = int(velocity * 64 / 127)
-                if vol_it < 0: vol_it = 0
-                if vol_it > 64: vol_it = 64
-                p_bytes.append(vol_it)
+                p_bytes.append(midi_velocity_to_it_volume(velocity))
             
             p_bytes.append(0)
         patterns.append(bytes(p_bytes))

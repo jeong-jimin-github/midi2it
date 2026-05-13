@@ -3,8 +3,13 @@ import tempfile
 from pathlib import Path
 from unittest.mock import patch
 import mido
+import numpy as np
 
-from midi2it import encode_it_text, write_it, convert_midi_to_it
+from midi2it import encode_it_text, write_it, convert_midi_to_it, FluidSynth, midi_velocity_to_it_volume
+
+# One-step tolerance accounts for float rounding during normalization->int16 conversion.
+NEAR_MAX_INT16 = 32766
+NEAR_MIN_INT16 = -32766
 
 
 class EncodeItTextTests(unittest.TestCase):
@@ -18,7 +23,37 @@ class EncodeItTextTests(unittest.TestCase):
         self.assertEqual(encode_it_text("abc", 5), b"abc\x00\x00")
 
 
+class VelocityMappingTests(unittest.TestCase):
+    def test_velocity_mapping_clamps_bounds(self):
+        self.assertEqual(midi_velocity_to_it_volume(-1), 0)
+        self.assertEqual(midi_velocity_to_it_volume(0), 0)
+        self.assertEqual(midi_velocity_to_it_volume(127), 64)
+        self.assertEqual(midi_velocity_to_it_volume(200), 64)
+
+    def test_velocity_mapping_boosts_mid_velocities(self):
+        self.assertEqual(midi_velocity_to_it_volume(64), 45)
+        self.assertEqual(midi_velocity_to_it_volume(100), 57)
+
+
 class TempoTests(unittest.TestCase):
+    def test_write_it_uses_max_mix_volume(self):
+        with tempfile.NamedTemporaryFile(suffix=".it", delete=False) as tmp:
+            it_path = tmp.name
+
+        try:
+            write_it(
+                it_path,
+                "volume-test",
+                samples=[{"name": "sample", "data": b"\x00\x00"}],
+                patterns=[b"\x00"],
+                orders=[0],
+            )
+            with open(it_path, "rb") as f:
+                data = f.read(64)
+            self.assertEqual(data[49], 128)
+        finally:
+            Path(it_path).unlink(missing_ok=True)
+
     def test_write_it_uses_initial_tempo(self):
         with tempfile.NamedTemporaryFile(suffix=".it", delete=False) as tmp:
             it_path = tmp.name
@@ -66,6 +101,62 @@ class TempoTests(unittest.TestCase):
         finally:
             Path(midi_path).unlink(missing_ok=True)
             Path(out_path).unlink(missing_ok=True)
+
+
+class FluidSynthRenderSampleTests(unittest.TestCase):
+    class FakeFS:
+        def __init__(self, left_value=1000, right_value=1000):
+            self.left_value = left_value
+            self.right_value = right_value
+            self.noteon_velocity = None
+
+        def fluid_synth_program_select(self, synth, chan, sfid, bank, prog):
+            return 0
+
+        def fluid_synth_noteon(self, synth, chan, note, velocity):
+            self.noteon_velocity = velocity
+            return 0
+
+        def fluid_synth_write_s16(self, synth, num_samples, left, loff, linc, right, roff, rinc):
+            for i in range(num_samples):
+                left[loff + i * linc] = self.left_value
+                right[roff + i * rinc] = self.right_value
+            return 0
+
+        def fluid_synth_noteoff(self, synth, chan, note):
+            return 0
+
+        def delete_fluid_synth(self, synth):
+            return 0
+
+        def delete_fluid_settings(self, settings):
+            return 0
+
+    def _make_synth(self, fake_fs):
+        synth = FluidSynth.__new__(FluidSynth)
+        synth.fs = fake_fs
+        synth.synth = object()
+        synth.settings = object()
+        synth.sfid = 1
+        synth.sample_rate = 4
+        return synth
+
+    def test_render_sample_uses_full_velocity_and_normalizes_audio(self):
+        synth = self._make_synth(self.FakeFS(left_value=1000, right_value=1000))
+
+        rendered = synth.render_sample(bank=0, prog=0, note=60, duration_sec=1.0)
+
+        self.assertEqual(synth.fs.noteon_velocity, 127)
+        rendered_i16 = np.frombuffer(rendered, dtype=np.int16)
+        self.assertTrue(np.all(rendered_i16 >= NEAR_MAX_INT16))
+
+    def test_render_sample_normalization_preserves_negative_sign(self):
+        synth = self._make_synth(self.FakeFS(left_value=-1000, right_value=-1000))
+
+        rendered = synth.render_sample(bank=0, prog=0, note=60, duration_sec=1.0)
+
+        rendered_i16 = np.frombuffer(rendered, dtype=np.int16)
+        self.assertTrue(np.all(rendered_i16 <= NEAR_MIN_INT16))
 
 
 if __name__ == "__main__":
