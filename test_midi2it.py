@@ -191,6 +191,7 @@ class TempoTests(unittest.TestCase):
 
             patterns = mock_write.call_args.args[3]
             note_rows = self._extract_note_rows(patterns)
+            self.assertGreaterEqual(len(note_rows), note_count)
             self.assertEqual(note_rows[:note_count], [i * 4 for i in range(note_count)])
         finally:
             Path(midi_path).unlink(missing_ok=True)
