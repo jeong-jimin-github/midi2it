@@ -197,7 +197,7 @@ class TempoTests(unittest.TestCase):
             Path(midi_path).unlink(missing_ok=True)
             Path(out_path).unlink(missing_ok=True)
 
-    def test_convert_midi_to_it_test_mid_keeps_early_offgrid_notes_in_expected_row(self):
+    def test_test_mid_early_notes_not_pushed_to_next_row(self):
         midi_path = Path(__file__).with_name("test.mid")
         with tempfile.NamedTemporaryFile(suffix=".it", delete=False) as out_tmp:
             out_path = out_tmp.name
