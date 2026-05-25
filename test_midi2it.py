@@ -36,6 +36,35 @@ class VelocityMappingTests(unittest.TestCase):
 
 
 class TempoTests(unittest.TestCase):
+    @staticmethod
+    def _extract_note_rows(patterns):
+        rows = []
+        abs_row = 0
+        for row_count, p_data in patterns:
+            idx = 0
+            for _ in range(row_count):
+                has_note = False
+                while idx < len(p_data):
+                    channel_byte = p_data[idx]
+                    idx += 1
+                    if channel_byte == 0:
+                        break
+                    mask = p_data[idx]
+                    idx += 1
+                    if mask & 0x01:
+                        has_note = True
+                        idx += 1
+                    if mask & 0x02:
+                        idx += 1
+                    if mask & 0x04:
+                        idx += 1
+                    if mask & 0x08:
+                        idx += 2
+                if has_note:
+                    rows.append(abs_row)
+                abs_row += 1
+        return rows
+
     def test_write_it_uses_max_mix_volume(self):
         with tempfile.NamedTemporaryFile(suffix=".it", delete=False) as tmp:
             it_path = tmp.name
@@ -100,6 +129,94 @@ class TempoTests(unittest.TestCase):
             self.assertEqual(mock_write.call_args.kwargs["initial_tempo"], 90)
         finally:
             Path(midi_path).unlink(missing_ok=True)
+            Path(out_path).unlink(missing_ok=True)
+
+    def test_convert_midi_to_it_uses_time_signature_for_pattern_rows(self):
+        with tempfile.NamedTemporaryFile(suffix=".mid", delete=False) as midi_tmp:
+            midi_path = midi_tmp.name
+        with tempfile.NamedTemporaryFile(suffix=".it", delete=False) as out_tmp:
+            out_path = out_tmp.name
+
+        try:
+            mid = mido.MidiFile(ticks_per_beat=480)
+            track = mido.MidiTrack()
+            mid.tracks.append(track)
+            track.append(mido.MetaMessage("time_signature", numerator=3, denominator=4, time=0))
+            track.append(mido.Message("note_on", note=60, velocity=100, time=0, channel=0))
+            track.append(mido.Message("note_on", note=64, velocity=100, time=480, channel=0))
+            mid.save(midi_path)
+
+            class FakeFluidSynth:
+                def __init__(self, sf2_path):
+                    self.sf2_path = sf2_path
+
+                def render_sample(self, bank, prog, note=60, duration_sec=1.0):
+                    return b"\x00\x00"
+
+            with patch("midi2it.FluidSynth", FakeFluidSynth), patch("midi2it.write_it") as mock_write:
+                convert_midi_to_it(midi_path, "dummy.sf2", out_path)
+
+            patterns = mock_write.call_args.args[3]
+            self.assertEqual(patterns[0][0], 48)
+        finally:
+            Path(midi_path).unlink(missing_ok=True)
+            Path(out_path).unlink(missing_ok=True)
+
+    def test_convert_midi_to_it_keeps_beat_alignment_when_ticks_per_beat_not_divisible_by_4(self):
+        with tempfile.NamedTemporaryFile(suffix=".mid", delete=False) as midi_tmp:
+            midi_path = midi_tmp.name
+        with tempfile.NamedTemporaryFile(suffix=".it", delete=False) as out_tmp:
+            out_path = out_tmp.name
+
+        try:
+            ticks_per_beat = 101
+            note_count = 35
+            mid = mido.MidiFile(ticks_per_beat=ticks_per_beat)
+            track = mido.MidiTrack()
+            mid.tracks.append(track)
+            track.append(mido.Message("note_on", note=60, velocity=100, time=0, channel=0))
+            for _ in range(note_count - 1):
+                track.append(mido.Message("note_on", note=60, velocity=100, time=ticks_per_beat, channel=0))
+            mid.save(midi_path)
+
+            class FakeFluidSynth:
+                def __init__(self, sf2_path):
+                    self.sf2_path = sf2_path
+
+                def render_sample(self, bank, prog, note=60, duration_sec=1.0):
+                    return b"\x00\x00"
+
+            with patch("midi2it.FluidSynth", FakeFluidSynth), patch("midi2it.write_it") as mock_write:
+                convert_midi_to_it(midi_path, "dummy.sf2", out_path)
+
+            patterns = mock_write.call_args.args[3]
+            note_rows = self._extract_note_rows(patterns)
+            self.assertGreaterEqual(len(note_rows), note_count)
+            self.assertEqual(note_rows[:note_count], [i * 4 for i in range(note_count)])
+        finally:
+            Path(midi_path).unlink(missing_ok=True)
+            Path(out_path).unlink(missing_ok=True)
+
+    def test_off_grid_notes_not_rounded_to_next_row(self):
+        midi_path = Path(__file__).with_name("test.mid")
+        with tempfile.NamedTemporaryFile(suffix=".it", delete=False) as out_tmp:
+            out_path = out_tmp.name
+
+        try:
+            class FakeFluidSynth:
+                def __init__(self, sf2_path):
+                    self.sf2_path = sf2_path
+
+                def render_sample(self, bank, prog, note=60, duration_sec=1.0):
+                    return b"\x00\x00"
+
+            with patch("midi2it.FluidSynth", FakeFluidSynth), patch("midi2it.write_it") as mock_write:
+                convert_midi_to_it(str(midi_path), "dummy.sf2", out_path)
+
+            patterns = mock_write.call_args.args[3]
+            note_rows = self._extract_note_rows(patterns)
+            self.assertIn(23, note_rows)
+        finally:
             Path(out_path).unlink(missing_ok=True)
 
 
