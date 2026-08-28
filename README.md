@@ -1,59 +1,105 @@
 # midi2it
 
-midi2it is a Python tool for converting MIDI (.mid) files and SF2 soundfonts into Impulse Tracker (.it) module music files.
+`midi2it` converts MIDI (`.mid`) files into Impulse Tracker (`.it`) modules by rendering the MIDI instruments through an SF2 SoundFont.
 
 ## Features
 
-- Convert MIDI files to .it module format
-- Support for SF2 soundfonts
-- 100% Python implementation
+- MIDI to Impulse Tracker (`.it`) conversion
+- CLI and Tkinter GUI
+- SoundFont argument is optional: a GeneralUser GS SF2 is downloaded and cached automatically on first use
+- Explicit custom SF2 SoundFonts are still supported
+- MIDI time signatures such as 3/4, 6/8 and mid-song time-signature changes are reflected in IT pattern lengths
+- Byte-identical rendered samples are deduplicated to reduce output size
+- Windows EXE releases for both CLI and GUI via GitHub Actions
 
 ## Requirements
 
 - Python 3.7+
-- See `requirements.txt` for Python dependencies (`mido`, `numpy`)
-- **FluidSynth C library** (required for soundfont rendering; install separately, see below)
+- Python packages in `requirements.txt` (`mido`, `numpy`)
+- **FluidSynth C library** for SoundFont rendering
 
-### Installing FluidSynth
+### FluidSynth
 
-The FluidSynth library must be installed on your system for this tool to work.
+**macOS**
 
-**macOS (using Homebrew):**
 ```bash
 brew install fluidsynth
 ```
 
-**Linux (Debian/Ubuntu):**
+**Debian / Ubuntu**
+
 ```bash
 sudo apt-get install fluidsynth
 ```
 
-**Windows:**  
-Download and install the FluidSynth library DLL (`fluidsynth.dll` or `libfluidsynth-*.dll`), and ensure it is accessible in your `PATH` (or next to `midi2it.exe`). Refer to the official FluidSynth documentation for installation instructions.
+**Windows**
+
+Install FluidSynth and make `fluidsynth.dll` / `libfluidsynth-*.dll` available in `PATH`, next to `midi2it.exe`, or in a standard FluidSynth installation directory.
 
 ## Installation
 
-1. Clone this repository:
-   ```bash
-   git clone https://github.com/jeong-jimin-github/midi2it.git
-   cd midi2it
-   ```
+```bash
+git clone https://github.com/jeong-jimin-github/midi2it.git
+cd midi2it
+pip install -r requirements.txt
+```
 
-2. Install Python dependencies:
-   ```bash
-   pip install -r requirements.txt
-   ```
+## CLI usage
 
-## Usage
-
-You need a MIDI file (`.mid`) and an SF2 soundfont to use this tool.
+The shortest form needs only a MIDI file:
 
 ```bash
-python midi2it.py input.mid input.sf2 [output.it]
+python midi2it.py input.mid
 ```
-- `input.mid`: Your MIDI file
-- `input.sf2`: SoundFont file
-- `output.it`: Output filename (optional, defaults to `output.it`)
+
+On first use without an SF2 argument, midi2it downloads and caches GeneralUser GS automatically. The default output is `output.it`.
+
+Choose an output path:
+
+```bash
+python midi2it.py input.mid -o song.it
+```
+
+Use your own SoundFont:
+
+```bash
+python midi2it.py input.mid --soundfont input.sf2 --output song.it
+```
+
+The old positional form remains supported:
+
+```bash
+python midi2it.py input.mid input.sf2 song.it
+```
+
+You can also set `MIDI2IT_SOUNDFONT` to use a preferred default SF2 without passing it each time.
+
+## GUI usage
+
+```bash
+python midi2it_gui.py
+```
+
+Select a MIDI file, optionally select an SF2 file, choose the output path, and press **Convert**. Leaving the SoundFont field empty uses the same automatic download/cache behavior as the CLI.
+
+## Windows releases
+
+Each push builds and publishes:
+
+- `midi2it.exe` — CLI
+- `midi2it-gui.exe` — GUI
+
+FluidSynth is still required at runtime as described above.
+
+## Default SoundFont
+
+When no SoundFont is supplied, midi2it downloads the upstream **GeneralUser GS** SoundFont from the `mrbumpy409/GeneralUser-GS` repository and stores it in the local cache. It is not bundled into this repository.
+
+## Tests
+
+```bash
+python -m unittest -v
+```
 
 ## License
 
@@ -62,7 +108,3 @@ This project is licensed under the MIT License.
 ## Author
 
 - [jeong-jimin-github](https://github.com/jeong-jimin-github)
-
----
-
-_This tool is for converting MIDI + SF2 soundfont files into IT module music. Contributions and issues are welcome!_

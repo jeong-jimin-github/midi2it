@@ -1,6 +1,11 @@
 import os
 import sys
 import struct
+import hashlib
+import shutil
+import urllib.request
+from pathlib import Path
+
 import mido
 import numpy as np
 import ctypes
@@ -9,6 +14,13 @@ import ctypes.util
 # --- IT Format Constants ---
 NUM_CHANNELS = 64
 NORMALIZATION_TARGET_INT16 = 32767.0
+ROW_RESOLUTION = 4
+DEFAULT_SOUNDFONT_URL = (
+    "https://raw.githubusercontent.com/mrbumpy409/GeneralUser-GS/"
+    "684543d5e5efaef08d02be50dcda8d552478fa60/GeneralUser-GS.sf2"
+)
+DEFAULT_SOUNDFONT_FILENAME = "GeneralUser-GS.sf2"
+DEFAULT_SOUNDFONT_MIN_BYTES = 1_000_000
 
 # --- FluidSynth Interface ---
 class FluidSynth:
@@ -132,6 +144,44 @@ def midi_velocity_to_it_volume(velocity):
     if v == 0:
         return 0
     return int(round(((v / 127.0) ** 0.5) * 64))
+
+
+def _default_soundfont_cache_dir():
+    if os.name == "nt" and os.environ.get("LOCALAPPDATA"):
+        return Path(os.environ["LOCALAPPDATA"]) / "midi2it" / "cache"
+    cache_root = os.environ.get("XDG_CACHE_HOME")
+    return (Path(cache_root) if cache_root else Path.home() / ".cache") / "midi2it"
+
+
+def download_default_soundfont(cache_dir=None, url=DEFAULT_SOUNDFONT_URL):
+    cache_dir = Path(cache_dir) if cache_dir is not None else _default_soundfont_cache_dir()
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    target = cache_dir / DEFAULT_SOUNDFONT_FILENAME
+    if target.exists() and target.stat().st_size >= DEFAULT_SOUNDFONT_MIN_BYTES:
+        return str(target)
+    temp_path = target.with_suffix(target.suffix + ".download")
+    temp_path.unlink(missing_ok=True)
+    request = urllib.request.Request(url, headers={"User-Agent": "midi2it/1.0"})
+    print(f"No SoundFont specified. Downloading default SoundFont to: {target}")
+    try:
+        with urllib.request.urlopen(request, timeout=120) as response, open(temp_path, "wb") as out_file:
+            shutil.copyfileobj(response, out_file, length=1024 * 1024)
+        if temp_path.stat().st_size < DEFAULT_SOUNDFONT_MIN_BYTES:
+            raise RuntimeError("Downloaded SoundFont is unexpectedly small or incomplete")
+        os.replace(temp_path, target)
+    except Exception as exc:
+        temp_path.unlink(missing_ok=True)
+        raise RuntimeError(f"Failed to download the default SoundFont: {exc}") from exc
+    return str(target)
+
+
+def resolve_soundfont(sf2_path=None):
+    if sf2_path:
+        return str(sf2_path)
+    env_soundfont = os.environ.get("MIDI2IT_SOUNDFONT")
+    if env_soundfont:
+        return env_soundfont
+    return download_default_soundfont()
 
 
 def _pattern_entry(entry):
@@ -262,93 +312,127 @@ def get_initial_bpm(mid):
     return 120
 
 
-def get_initial_time_signature(mid):
+def get_time_signature_events(mid):
+    events = []
+    abs_tick = 0
     for msg in mido.merge_tracks(mid.tracks):
-        if msg.type == 'time_signature':
+        abs_tick += msg.time
+        if msg.type == "time_signature":
             numerator = int(msg.numerator) if msg.numerator > 0 else 4
             denominator = int(msg.denominator) if msg.denominator > 0 else 4
-            return numerator, denominator
-    return 4, 4
+            events.append((abs_tick, numerator, denominator))
+    return events
 
 
-def convert_midi_to_it(midi_path, sf2_path, output_path):
+def get_initial_time_signature(mid):
+    signature = (4, 4)
+    for abs_tick, numerator, denominator in get_time_signature_events(mid):
+        if abs_tick > 0:
+            break
+        signature = (numerator, denominator)
+    return signature
+
+
+def _rows_per_pattern_for_signature(numerator, denominator):
+    rows_per_measure = max(1, int(round((numerator * 16.0) / denominator)))
+    return max(1, min(rows_per_measure * 4, 200))
+
+
+def _pattern_spans_for_midi(mid, actual_last_row, row_resolution=ROW_RESOLUTION):
+    if mid.ticks_per_beat <= 0:
+        raise ValueError("Invalid MIDI ticks_per_beat")
+    signature_by_row = {0: (4, 4)}
+    for abs_tick, numerator, denominator in get_time_signature_events(mid):
+        row = int((abs_tick * row_resolution) / mid.ticks_per_beat)
+        if row <= actual_last_row:
+            signature_by_row[row] = (numerator, denominator)
+    changes = sorted(signature_by_row.items())
+    spans = []
+    position = 0
+    change_index = 0
+    signature = (4, 4)
+    while position <= actual_last_row and len(spans) < 200:
+        while change_index < len(changes) and changes[change_index][0] <= position:
+            _, signature = changes[change_index]
+            change_index += 1
+        target_rows = _rows_per_pattern_for_signature(*signature)
+        next_change_row = changes[change_index][0] if change_index < len(changes) else None
+        row_count = target_rows
+        if next_change_row is not None and position < next_change_row < position + target_rows:
+            row_count = next_change_row - position
+        row_count = max(1, min(row_count, 200))
+        spans.append((position, row_count))
+        position += row_count
+    return spans
+
+
+def convert_midi_to_it(midi_path, sf2_path=None, output_path=None):
+    if output_path is None:
+        output_path = "output.it"
     print(f"Loading MIDI: {midi_path}")
     mid = mido.MidiFile(midi_path)
     
-    # Track which (bank, program) is used on which channel
-    channel_programs = {i: (0, 0) for i in range(16)}
-    channel_programs[9] = (128, 0) # MIDI channel 10 is index 9
-    
-    melodic_notes = {} # (bank, program) -> set of notes
+    melodic_notes = {}
     drum_notes_used = set()
-    
-    # First pass: find all instruments and notes used
     for track in mid.tracks:
         curr_channel_programs = {i: (0, 0) for i in range(16)}
         curr_channel_programs[9] = (128, 0)
         for msg in track:
-            if msg.type == 'program_change':
+            if msg.type == "program_change":
                 bank = 128 if msg.channel == 9 else 0
                 curr_channel_programs[msg.channel] = (bank, msg.program)
-            elif msg.type == 'note_on' and msg.velocity > 0:
+            elif msg.type == "note_on" and msg.velocity > 0:
                 if msg.channel == 9:
                     drum_notes_used.add(msg.note)
                 else:
-                    prog = curr_channel_programs[msg.channel]
-                    if prog not in melodic_notes:
-                        melodic_notes[prog] = set()
-                    melodic_notes[prog].add(msg.note)
+                    melodic_notes.setdefault(curr_channel_programs[msg.channel], set()).add(msg.note)
 
-    # Assign IDs: multisampled melodic first, then drums
-    all_instruments = [] # list of (bank, prog, note, is_drum)
-    melodic_sample_map = {} # (bank, prog, base_note) -> sample_id (1-based)
-    drum_sample_map = {} # note -> sample_id (1-based)
-    
     base_note_options = [36, 60, 84, 108]
-    
-    for prog in sorted(melodic_notes.keys()):
-        for m_note in sorted(melodic_notes[prog]):
-            # Find closest base note
-            best_base = 60
-            min_dist = 999
-            for b in base_note_options:
-                if abs(m_note - b) < min_dist:
-                    min_dist = abs(m_note - b)
-                    best_base = b
-            
+    sample_specs = []
+    seen_melodic_specs = set()
+    for prog in sorted(melodic_notes):
+        for midi_note in sorted(melodic_notes[prog]):
+            best_base = min(base_note_options, key=lambda base: abs(midi_note - base))
             key = (prog[0], prog[1], best_base)
-            if key not in melodic_sample_map:
-                all_instruments.append((prog[0], prog[1], best_base, False))
-                melodic_sample_map[key] = len(all_instruments)
-        
-    for d_note in sorted(drum_notes_used):
-        all_instruments.append((128, 0, d_note, True))
-        drum_sample_map[d_note] = len(all_instruments)
-        
-    if not all_instruments:
-        all_instruments.append((0, 0, 60, False))
+            if key not in seen_melodic_specs:
+                seen_melodic_specs.add(key)
+                sample_specs.append((prog[0], prog[1], best_base, False))
+    for drum_note in sorted(drum_notes_used):
+        sample_specs.append((128, 0, drum_note, True))
+    if not sample_specs:
+        sample_specs.append((0, 0, 60, False))
 
     initial_bpm = get_initial_bpm(mid)
-
-    print(f"Loading SF2 and rendering samples...")
+    sf2_path = resolve_soundfont(sf2_path)
+    print("Loading SF2 and rendering samples...")
     fs = FluidSynth(sf2_path)
     samples = []
-    for bank, prog, note, is_drum in all_instruments:
+    sample_identity_to_id = {}
+    melodic_sample_map = {}
+    drum_sample_map = {}
+    for bank, prog, note, is_drum in sample_specs:
         name = f"Drum {note}" if is_drum else f"Instr {prog}@{note}"
         print(f"  Recording {name}...")
         data = fs.render_sample(bank, prog, note=note)
-        samples.append({'name': name, 'data': data})
+        playback_root = 60 if is_drum else note
+        identity = (playback_root, len(data), hashlib.sha256(data).digest())
+        sample_id = sample_identity_to_id.get(identity)
+        if sample_id is None:
+            samples.append({"name": name, "data": data})
+            sample_id = len(samples)
+            sample_identity_to_id[identity] = sample_id
+        else:
+            print(f"    Reusing identical sample #{sample_id}")
+        if is_drum:
+            drum_sample_map[note] = sample_id
+        else:
+            melodic_sample_map[(bank, prog, note)] = sample_id
 
-    row_resolution = 4
     if mid.ticks_per_beat <= 0:
         raise ValueError("Invalid MIDI ticks_per_beat")
-    ts_num, ts_den = get_initial_time_signature(mid)
-    rows_per_measure = max(1, int(round((ts_num * 16.0) / ts_den)))
-    rows_per_pattern = 64 if (ts_num == 4 and ts_den == 4) else max(1, min(rows_per_measure * 4, 200))
-    
     merged_track = mido.merge_tracks(mid.tracks)
     total_ticks = sum(msg.time for msg in merged_track)
-    max_rows = int((total_ticks * row_resolution) / mid.ticks_per_beat) + 128
+    max_rows = int((total_ticks * ROW_RESOLUTION) / mid.ticks_per_beat) + 128
     row_data = [[] for _ in range(max_rows)]
     
     current_channel_programs = {i: (0, 0) for i in range(16)}
@@ -361,7 +445,7 @@ def convert_midi_to_it(midi_path, sf2_path, output_path):
             bank = 128 if msg.channel == 9 else 0
             current_channel_programs[msg.channel] = (bank, msg.program)
         elif msg.type == 'note_on' and msg.velocity > 0:
-            row_idx = int((abs_tick * row_resolution) / mid.ticks_per_beat)
+            row_idx = int((abs_tick * ROW_RESOLUTION) / mid.ticks_per_beat)
             if row_idx >= max_rows: continue
             
             if msg.channel == 9:
@@ -369,14 +453,7 @@ def convert_midi_to_it(midi_path, sf2_path, output_path):
                 note_to_play = 60 # Played at original pitch
             else:
                 prog = current_channel_programs[msg.channel]
-                # Find the sample used for this note
-                best_base = 60
-                min_dist = 999
-                for b in base_note_options:
-                    if abs(msg.note - b) < min_dist:
-                        min_dist = abs(msg.note - b)
-                        best_base = b
-                
+                best_base = min(base_note_options, key=lambda base: abs(msg.note - base))
                 instr_idx = melodic_sample_map.get((prog[0], prog[1], best_base), 1)
                 # Formula: N = M - M_rec + 60
                 note_to_play = msg.note - best_base + 60
@@ -387,60 +464,72 @@ def convert_midi_to_it(midi_path, sf2_path, output_path):
             it_chan = msg.channel
             row_data[row_idx].append((it_chan, note_to_play, instr_idx, msg.velocity))
 
-    # Pack patterns
+    # Pack patterns, splitting at MIDI time-signature changes.
     actual_last_row = 0
     for r_idx, rd in enumerate(row_data):
-        if rd: actual_last_row = r_idx
-    
-    num_patterns = (actual_last_row + rows_per_pattern) // rows_per_pattern
-    if num_patterns > 200: num_patterns = 200
-    
+        if rd:
+            actual_last_row = r_idx
+
+    spans = _pattern_spans_for_midi(mid, actual_last_row)
     patterns = []
-    print(f"Processing {num_patterns} patterns...")
-    for p in range(num_patterns):
+    print(f"Processing {len(spans)} patterns...")
+    for start_row, row_count in spans:
         p_bytes = bytearray()
-        for r in range(rows_per_pattern):
-            row_idx = p * rows_per_pattern + r
+        for r in range(row_count):
+            row_idx = start_row + r
             notes_in_row = row_data[row_idx] if row_idx < len(row_data) else []
-            
-            seen_channels = {} # chan -> (note, instr, velocity)
+
+            seen_channels = {}
             for it_chan, note, instr, velocity in notes_in_row:
-                # If multiple notes on same channel, we'll try to find an empty IT channel (16-63)
                 final_chan = it_chan
                 if final_chan in seen_channels:
-                    for c in range(16, 64):
+                    for c in range(16, NUM_CHANNELS):
                         if c not in seen_channels:
                             final_chan = c
                             break
-                
                 seen_channels[final_chan] = (note, instr, velocity)
-                
+
             for it_chan, (note, instr, velocity) in sorted(seen_channels.items()):
-                p_bytes.append((it_chan & 0x3F) + 1 | 0x80)
-                p_bytes.append(0x07) # note + instr + vol
+                p_bytes.append(((it_chan & 0x3F) + 1) | 0x80)
+                p_bytes.append(0x07)
                 p_bytes.append(note)
                 p_bytes.append(instr)
-                
                 p_bytes.append(midi_velocity_to_it_volume(velocity))
-            
             p_bytes.append(0)
-        patterns.append((rows_per_pattern, bytes(p_bytes)))
+        patterns.append((row_count, bytes(p_bytes)))
 
-    orders = [i for i in range(num_patterns)]
-    
+    orders = list(range(len(patterns)))
+
     print(f"Writing IT file: {output_path}")
     write_it(output_path, os.path.basename(midi_path)[:26], samples, patterns, orders, initial_tempo=initial_bpm)
     print("Done!")
 
+def main(argv=None):
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Convert MIDI files to Impulse Tracker (.it) modules")
+    parser.add_argument("midi", help="Input MIDI file")
+    parser.add_argument("legacy_soundfont", nargs="?", help="Optional SF2 path; omitted uses an auto-downloaded default")
+    parser.add_argument("legacy_output", nargs="?", help="Optional output IT path")
+    parser.add_argument("-s", "--soundfont", help="Optional SF2 SoundFont path")
+    parser.add_argument("-o", "--output", help="Output IT path (default: output.it)")
+    args = parser.parse_args(argv)
+
+    soundfont = args.soundfont or args.legacy_soundfont
+    output = args.output or args.legacy_output
+    if args.soundfont is None and args.output is None and args.legacy_output is None and soundfont and str(soundfont).lower().endswith(".it"):
+        output = soundfont
+        soundfont = None
+    if output is None:
+        output = "output.it"
+
+    try:
+        convert_midi_to_it(args.midi, soundfont, output)
+    except Exception as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
 if __name__ == "__main__":
-    import sys
-    if len(sys.argv) < 3:
-        print("Usage: python3 midi2it.py <input.mid> <input.sf2> [output.it]")
-    else:
-        out = sys.argv[3] if len(sys.argv) > 3 else "output.it"
-        try:
-            convert_midi_to_it(sys.argv[1], sys.argv[2], out)
-        except Exception as e:
-            print(f"Error: {e}")
-            import traceback
-            traceback.print_exc()
+    raise SystemExit(main())

@@ -1,11 +1,15 @@
 import unittest
 import tempfile
+import io
 from pathlib import Path
 from unittest.mock import patch
 import mido
 import numpy as np
 
-from midi2it import encode_it_text, write_it, convert_midi_to_it, FluidSynth, midi_velocity_to_it_volume
+from midi2it import (
+    encode_it_text, write_it, convert_midi_to_it, FluidSynth, midi_velocity_to_it_volume,
+    download_default_soundfont, get_initial_time_signature,
+)
 
 # One-step tolerance accounts for float rounding during normalization->int16 conversion.
 NEAR_MAX_INT16 = 32766
@@ -218,6 +222,88 @@ class TempoTests(unittest.TestCase):
             self.assertIn(23, note_rows)
         finally:
             Path(out_path).unlink(missing_ok=True)
+
+
+class IssueRegressionTests(unittest.TestCase):
+    def test_time_signature_change_splits_patterns_at_change(self):
+        with tempfile.NamedTemporaryFile(suffix=".mid", delete=False) as midi_tmp:
+            midi_path = midi_tmp.name
+        with tempfile.NamedTemporaryFile(suffix=".it", delete=False) as out_tmp:
+            out_path = out_tmp.name
+        try:
+            mid = mido.MidiFile(ticks_per_beat=480)
+            track = mido.MidiTrack()
+            mid.tracks.append(track)
+            track.append(mido.Message("note_on", note=60, velocity=100, time=0, channel=0))
+            track.append(mido.MetaMessage("time_signature", numerator=3, denominator=4, time=1920))
+            track.append(mido.Message("note_on", note=62, velocity=100, time=0, channel=0))
+            track.append(mido.Message("note_on", note=64, velocity=100, time=1440, channel=0))
+            mid.save(midi_path)
+
+            class FakeFluidSynth:
+                def __init__(self, sf2_path):
+                    pass
+                def render_sample(self, bank, prog, note=60, duration_sec=1.0):
+                    return bytes([note & 0xFF, 0])
+
+            with patch("midi2it.FluidSynth", FakeFluidSynth), patch("midi2it.write_it") as mock_write:
+                convert_midi_to_it(midi_path, "dummy.sf2", out_path)
+
+            patterns = mock_write.call_args.args[3]
+            self.assertEqual([entry[0] for entry in patterns[:2]], [16, 48])
+        finally:
+            Path(midi_path).unlink(missing_ok=True)
+            Path(out_path).unlink(missing_ok=True)
+
+    def test_late_first_time_signature_does_not_rewrite_song_start(self):
+        mid = mido.MidiFile(ticks_per_beat=480)
+        track = mido.MidiTrack()
+        mid.tracks.append(track)
+        track.append(mido.Message("note_on", note=60, velocity=100, time=0, channel=0))
+        track.append(mido.MetaMessage("time_signature", numerator=3, denominator=4, time=480))
+        self.assertEqual(get_initial_time_signature(mid), (4, 4))
+
+    def test_identical_rendered_samples_are_reused(self):
+        with tempfile.NamedTemporaryFile(suffix=".mid", delete=False) as midi_tmp:
+            midi_path = midi_tmp.name
+        with tempfile.NamedTemporaryFile(suffix=".it", delete=False) as out_tmp:
+            out_path = out_tmp.name
+        try:
+            mid = mido.MidiFile(ticks_per_beat=480)
+            track = mido.MidiTrack()
+            mid.tracks.append(track)
+            track.append(mido.Message("program_change", program=1, time=0, channel=0))
+            track.append(mido.Message("note_on", note=60, velocity=100, time=0, channel=0))
+            track.append(mido.Message("program_change", program=2, time=480, channel=0))
+            track.append(mido.Message("note_on", note=60, velocity=100, time=0, channel=0))
+            mid.save(midi_path)
+
+            class FakeFluidSynth:
+                def __init__(self, sf2_path):
+                    pass
+                def render_sample(self, bank, prog, note=60, duration_sec=1.0):
+                    return b"\x34\x12" * 8
+
+            with patch("midi2it.FluidSynth", FakeFluidSynth), patch("midi2it.write_it") as mock_write:
+                convert_midi_to_it(midi_path, "dummy.sf2", out_path)
+
+            samples = mock_write.call_args.args[2]
+            self.assertEqual(len(samples), 1)
+        finally:
+            Path(midi_path).unlink(missing_ok=True)
+            Path(out_path).unlink(missing_ok=True)
+
+    def test_default_soundfont_download_is_cached(self):
+        with tempfile.TemporaryDirectory() as cache_dir:
+            payload = b"RIFFfake-sf2-data"
+            with patch("midi2it.DEFAULT_SOUNDFONT_MIN_BYTES", 4), patch(
+                "midi2it.urllib.request.urlopen", return_value=io.BytesIO(payload)
+            ) as urlopen:
+                first = download_default_soundfont(cache_dir=cache_dir, url="https://example.invalid/test.sf2")
+                second = download_default_soundfont(cache_dir=cache_dir, url="https://example.invalid/test.sf2")
+            self.assertEqual(first, second)
+            self.assertEqual(Path(first).read_bytes(), payload)
+            self.assertEqual(urlopen.call_count, 1)
 
 
 class FluidSynthRenderSampleTests(unittest.TestCase):
