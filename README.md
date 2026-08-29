@@ -10,15 +10,21 @@
 - Explicit custom SF2 SoundFonts are still supported
 - MIDI time signatures such as 3/4, 6/8 and mid-song time-signature changes are reflected in IT pattern lengths
 - Byte-identical rendered samples are deduplicated to reduce output size
-- Windows EXE releases for both CLI and GUI via GitHub Actions
+- Windows EXE releases for both CLI and GUI, with FluidSynth bundled into each EXE
 
 ## Requirements
+
+### Windows release EXEs
+
+No separate FluidSynth installation is required. The release workflow bundles the official FluidSynth Windows x64 runtime and its required DLLs directly into both one-file executables.
+
+### Running from Python source
 
 - Python 3.7+
 - Python packages in `requirements.txt` (`mido`, `numpy`)
 - **FluidSynth C library** for SoundFont rendering
 
-### FluidSynth
+Install FluidSynth for source runs as appropriate for your platform:
 
 **macOS**
 
@@ -32,9 +38,9 @@ brew install fluidsynth
 sudo apt-get install fluidsynth
 ```
 
-**Windows**
+**Windows source runs**
 
-Install FluidSynth and make `fluidsynth.dll` / `libfluidsynth-*.dll` available in `PATH`, next to `midi2it.exe`, or in a standard FluidSynth installation directory.
+Install FluidSynth and make `fluidsynth.dll` / `libfluidsynth-*.dll` available in `PATH`, next to `midi2it.py`, or in a standard FluidSynth installation directory.
 
 ## Installation
 
@@ -89,11 +95,15 @@ Each push builds and publishes:
 - `midi2it.exe` — CLI
 - `midi2it-gui.exe` — GUI
 
-FluidSynth is still required at runtime as described above.
+Both EXEs bundle the official FluidSynth v2.6.0 Windows x64 runtime (`libfluidsynth-3.dll`, `SDL3.dll`, and `sndfile.dll`) and extract it internally when launched. Users do not need to install FluidSynth separately.
 
 ## Default SoundFont
 
-When no SoundFont is supplied, midi2it downloads the upstream **GeneralUser GS** SoundFont from the `mrbumpy409/GeneralUser-GS` repository and stores it in the local cache. It is not bundled into this repository.
+When no SoundFont is supplied, midi2it downloads the upstream **GeneralUser GS** SoundFont from the `mrbumpy409/GeneralUser-GS` repository and stores it in the local cache. The SoundFont itself is not bundled into this repository or EXE.
+
+## Third-party components
+
+Windows EXE builds include FluidSynth and runtime dependencies from the official FluidSynth Windows release. See `THIRD_PARTY_NOTICES.md` for attribution and license information.
 
 ## Tests
 

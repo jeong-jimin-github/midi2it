@@ -24,30 +24,63 @@ DEFAULT_SOUNDFONT_MIN_BYTES = 1_000_000
 
 # --- FluidSynth Interface ---
 class FluidSynth:
-    @staticmethod
-    def _library_candidates():
-        candidates = []
-        for name in ("fluidsynth", "libfluidsynth-3", "libfluidsynth-2"):
-            lib = ctypes.util.find_library(name)
-            if lib:
-                candidates.append(lib)
+    _dll_directory_handles = []
 
+    @staticmethod
+    def _runtime_library_dirs():
+        """Return directories that can contain FluidSynth at runtime, bundled first."""
+        search_dirs = []
+        bundle_dir = getattr(sys, "_MEIPASS", None)
+        if bundle_dir:
+            search_dirs.append(os.path.abspath(bundle_dir))
+        if getattr(sys, "frozen", False):
+            search_dirs.append(os.path.dirname(os.path.abspath(sys.executable)))
+        search_dirs.append(os.path.dirname(os.path.abspath(__file__)))
+
+        unique_dirs = []
+        seen = set()
+        for folder in search_dirs:
+            normalized = os.path.normcase(os.path.abspath(folder))
+            if normalized not in seen:
+                seen.add(normalized)
+                unique_dirs.append(folder)
+        return unique_dirs
+
+    @classmethod
+    def _prepare_windows_dll_search(cls):
+        if os.name != "nt" or not hasattr(os, "add_dll_directory") or cls._dll_directory_handles:
+            return
+        for folder in cls._runtime_library_dirs():
+            if os.path.isdir(folder):
+                try:
+                    # Keep the handles alive for the process lifetime. This lets the
+                    # bundled libfluidsynth DLL resolve SDL3.dll and sndfile.dll.
+                    cls._dll_directory_handles.append(os.add_dll_directory(folder))
+                except OSError:
+                    continue
+
+    @classmethod
+    def _library_candidates(cls):
+        candidates = []
         if os.name == "nt":
             dll_names = (
+                "libfluidsynth-3.dll",
                 "fluidsynth.dll",
                 "libfluidsynth.dll",
-                "libfluidsynth-3.dll",
                 "libfluidsynth-2.dll",
             )
-            candidates.extend(dll_names)
 
-            search_dirs = [os.path.dirname(os.path.abspath(__file__))]
-            if getattr(sys, "frozen", False):
-                search_dirs.insert(0, os.path.dirname(sys.executable))
-
-            for folder in search_dirs:
+            # Prefer PyInstaller's extraction directory so Windows release EXEs use
+            # the exact FluidSynth version shipped inside the executable.
+            for folder in cls._runtime_library_dirs():
                 for dll_name in dll_names:
                     candidates.append(os.path.join(folder, dll_name))
+
+            candidates.extend(dll_names)
+            for name in ("fluidsynth", "libfluidsynth-3", "libfluidsynth-2"):
+                lib = ctypes.util.find_library(name)
+                if lib:
+                    candidates.append(lib)
 
             for env_var in ("ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA"):
                 base = os.environ.get(env_var)
@@ -56,6 +89,10 @@ class FluidSynth:
                 for dll_name in dll_names:
                     candidates.append(os.path.join(base, "FluidSynth", "bin", dll_name))
         else:
+            for name in ("fluidsynth", "libfluidsynth-3", "libfluidsynth-2"):
+                lib = ctypes.util.find_library(name)
+                if lib:
+                    candidates.append(lib)
             # Try common Homebrew paths for macOS
             candidates.extend([
                 "/opt/homebrew/lib/libfluidsynth.dylib",
@@ -64,21 +101,23 @@ class FluidSynth:
 
         return candidates
 
-    def __init__(self, sf2_path):
-        self.fs = None
-        for lib in self._library_candidates():
+    @classmethod
+    def _load_library(cls):
+        cls._prepare_windows_dll_search()
+        for lib in cls._library_candidates():
             try:
-                self.fs = ctypes.CDLL(lib)
-                break
+                return ctypes.CDLL(lib), lib
             except OSError:
                 continue
 
-        if not self.fs:
-            if os.name == "nt":
-                raise ImportError(
-                    "FluidSynth library not found. Ensure fluidsynth.dll (or libfluidsynth-*.dll) is in PATH, next to midi2it.exe/midi2it.py, or in a standard FluidSynth install directory."
-                )
-            raise ImportError("FluidSynth library not found. Install it with 'brew install fluidsynth' or equivalent.")
+        if os.name == "nt":
+            raise ImportError(
+                "FluidSynth library not found. Ensure fluidsynth.dll (or libfluidsynth-*.dll) is in PATH, next to midi2it.exe/midi2it.py, or in a standard FluidSynth install directory."
+            )
+        raise ImportError("FluidSynth library not found. Install it with 'brew install fluidsynth' or equivalent.")
+
+    def __init__(self, sf2_path):
+        self.fs, self.loaded_library = self._load_library()
         
         # Define function signatures to prevent segfaults on 64-bit systems
         self.fs.new_fluid_settings.restype = ctypes.c_void_p
@@ -508,12 +547,25 @@ def main(argv=None):
     import argparse
 
     parser = argparse.ArgumentParser(description="Convert MIDI files to Impulse Tracker (.it) modules")
-    parser.add_argument("midi", help="Input MIDI file")
+    parser.add_argument("midi", nargs="?", help="Input MIDI file")
     parser.add_argument("legacy_soundfont", nargs="?", help="Optional SF2 path; omitted uses an auto-downloaded default")
     parser.add_argument("legacy_output", nargs="?", help="Optional output IT path")
     parser.add_argument("-s", "--soundfont", help="Optional SF2 SoundFont path")
     parser.add_argument("-o", "--output", help="Output IT path (default: output.it)")
+    parser.add_argument("--check-fluidsynth", action="store_true", help="Check that the FluidSynth library can be loaded and exit")
     args = parser.parse_args(argv)
+
+    if args.check_fluidsynth:
+        try:
+            _, loaded_library = FluidSynth._load_library()
+            print(f"FluidSynth library loaded: {loaded_library}")
+        except Exception as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return 1
+        return 0
+
+    if not args.midi:
+        parser.error("the following arguments are required: midi")
 
     soundfont = args.soundfont or args.legacy_soundfont
     output = args.output or args.legacy_output

@@ -6,10 +6,12 @@ on:
 permissions:
   contents: write
 
+env:
+  FLUIDSYNTH_VERSION: '2.6.0'
+
 jobs:
   build-and-release:
     runs-on: windows-latest
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -28,11 +30,41 @@ jobs:
       - name: Run tests
         run: python -m unittest -v
 
-      - name: Build CLI EXE
-        run: pyinstaller --clean --onefile midi2it.py --name midi2it
+      - name: Download FluidSynth runtime
+        shell: pwsh
+        run: |
+          $archive = "fluidsynth-v$env:FLUIDSYNTH_VERSION-win10-x64-cpp11.zip"
+          $url = "https://github.com/FluidSynth/fluidsynth/releases/download/v$env:FLUIDSYNTH_VERSION/$archive"
+          Invoke-WebRequest -Uri $url -OutFile $archive
+          Expand-Archive -Path $archive -DestinationPath fluidsynth-runtime
+          $bin = Join-Path "fluidsynth-runtime" "fluidsynth-v$env:FLUIDSYNTH_VERSION-win10-x64-cpp11\bin"
+          New-Item -ItemType Directory -Force -Path vendor\fluidsynth | Out-Null
+          Copy-Item "$bin\libfluidsynth-3.dll" "vendor\fluidsynth\libfluidsynth-3.dll"
+          Copy-Item "$bin\SDL3.dll" "vendor\fluidsynth\SDL3.dll"
+          Copy-Item "$bin\sndfile.dll" "vendor\fluidsynth\sndfile.dll"
+          Get-ChildItem vendor\fluidsynth
 
-      - name: Build GUI EXE
-        run: pyinstaller --clean --onefile --windowed midi2it_gui.py --name midi2it-gui
+      - name: Build CLI EXE with FluidSynth
+        shell: pwsh
+        run: |
+          pyinstaller --clean --onefile `
+            --add-binary "vendor\fluidsynth\libfluidsynth-3.dll;." `
+            --add-binary "vendor\fluidsynth\SDL3.dll;." `
+            --add-binary "vendor\fluidsynth\sndfile.dll;." `
+            midi2it.py --name midi2it
+
+      - name: Build GUI EXE with FluidSynth
+        shell: pwsh
+        run: |
+          pyinstaller --clean --onefile --windowed `
+            --add-binary "vendor\fluidsynth\libfluidsynth-3.dll;." `
+            --add-binary "vendor\fluidsynth\SDL3.dll;." `
+            --add-binary "vendor\fluidsynth\sndfile.dll;." `
+            midi2it_gui.py --name midi2it-gui
+
+      - name: Verify bundled FluidSynth loads from CLI EXE
+        shell: pwsh
+        run: .\dist\midi2it.exe --check-fluidsynth
 
       - name: Generate build-time tag
         id: tag
@@ -47,6 +79,7 @@ jobs:
         with:
           tag_name: ${{ steps.tag.outputs.tag }}
           name: ${{ steps.tag.outputs.tag }}
+          body: Windows x64 build with FluidSynth ${{ env.FLUIDSYNTH_VERSION }} bundled inside both executables.
           files: |
             dist/midi2it.exe
             dist/midi2it-gui.exe

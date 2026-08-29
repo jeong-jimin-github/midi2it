@@ -1,6 +1,8 @@
 import unittest
 import tempfile
 import io
+import os
+import sys
 from pathlib import Path
 from unittest.mock import patch
 import mido
@@ -304,6 +306,35 @@ class IssueRegressionTests(unittest.TestCase):
             self.assertEqual(first, second)
             self.assertEqual(Path(first).read_bytes(), payload)
             self.assertEqual(urlopen.call_count, 1)
+
+
+class FluidSynthDiscoveryTests(unittest.TestCase):
+    def test_runtime_library_dirs_prefer_pyinstaller_bundle(self):
+        with tempfile.TemporaryDirectory() as bundle_dir, patch.object(
+            sys, "_MEIPASS", bundle_dir, create=True
+        ):
+            directories = FluidSynth._runtime_library_dirs()
+
+        self.assertEqual(directories[0], os.path.abspath(bundle_dir))
+
+    @unittest.skipUnless(os.name == "nt", "Windows-only DLL candidate test")
+    def test_windows_candidates_include_bundled_fluidsynth_first(self):
+        with tempfile.TemporaryDirectory() as bundle_dir, patch.object(
+            sys, "_MEIPASS", bundle_dir, create=True
+        ):
+            candidates = FluidSynth._library_candidates()
+
+        self.assertEqual(candidates[0], os.path.join(os.path.abspath(bundle_dir), "libfluidsynth-3.dll"))
+
+    def test_load_library_returns_loaded_candidate(self):
+        fake_library = object()
+        with patch.object(FluidSynth, "_prepare_windows_dll_search"), patch.object(
+            FluidSynth, "_library_candidates", return_value=["bundled.dll"]
+        ), patch("midi2it.ctypes.CDLL", return_value=fake_library):
+            library, path = FluidSynth._load_library()
+
+        self.assertIs(library, fake_library)
+        self.assertEqual(path, "bundled.dll")
 
 
 class FluidSynthRenderSampleTests(unittest.TestCase):
