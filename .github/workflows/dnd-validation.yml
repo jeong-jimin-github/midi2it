@@ -1,0 +1,55 @@
+name: Validate GUI drag and drop
+
+on:
+  push:
+    branches: [dnd-fix]
+
+permissions:
+  contents: read
+
+jobs:
+  validate-dnd:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Run tests
+        run: python -m unittest -v
+
+      - name: Build GUI EXE with tkDnD
+        shell: pwsh
+        run: |
+          pyinstaller --clean --onefile --windowed `
+            --additional-hooks-dir=. `
+            --collect-all tkinterdnd2 `
+            midi2it_gui.py --name midi2it-gui
+
+      - name: Smoke-test bundled tkDnD
+        shell: pwsh
+        run: |
+          $marker = Join-Path $PWD "dnd-check.txt"
+          Remove-Item $marker -ErrorAction SilentlyContinue
+          & .\dist\midi2it-gui.exe --check-dnd $marker
+          if ($LASTEXITCODE -ne 0) {
+            throw "midi2it-gui.exe --check-dnd exited with code $LASTEXITCODE"
+          }
+          if (!(Test-Path $marker)) {
+            throw "GUI DnD smoke test did not create marker file"
+          }
+          $result = (Get-Content $marker -Raw).Trim()
+          Write-Host $result
+          if (!$result.StartsWith("OK tkdnd=")) {
+            throw "Bundled tkDnD smoke test failed: $result"
+          }
