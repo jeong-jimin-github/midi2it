@@ -10,8 +10,9 @@ import numpy as np
 
 from midi2it import (
     encode_it_text, write_it, convert_midi_to_it, FluidSynth, midi_velocity_to_it_volume,
-    download_default_soundfont, get_initial_time_signature,
+    download_default_soundfont, get_initial_time_signature, _midi_tick_to_row,
 )
+from midi2it_gui import _output_dialog_defaults
 
 # One-step tolerance accounts for float rounding during normalization->int16 conversion.
 NEAR_MAX_INT16 = 32766
@@ -27,6 +28,23 @@ class EncodeItTextTests(unittest.TestCase):
 
     def test_pads_short_strings(self):
         self.assertEqual(encode_it_text("abc", 5), b"abc\x00\x00")
+
+
+class GuiPathTests(unittest.TestCase):
+    def test_output_dialog_keeps_existing_filename(self):
+        initial_dir, initial_file = _output_dialog_defaults(
+            os.path.join("old", "folder", "song.it"),
+            os.path.join("midi", "input.mid"),
+        )
+        self.assertEqual(initial_file, "song.it")
+        self.assertTrue(initial_dir.endswith(os.path.join("old", "folder")))
+
+    def test_output_dialog_uses_midi_filename_when_output_empty(self):
+        initial_dir, initial_file = _output_dialog_defaults(
+            "", os.path.join("midi", "my song.mid")
+        )
+        self.assertEqual(initial_file, "my song.it")
+        self.assertTrue(initial_dir.endswith("midi"))
 
 
 class VelocityMappingTests(unittest.TestCase):
@@ -202,6 +220,15 @@ class TempoTests(unittest.TestCase):
         finally:
             Path(midi_path).unlink(missing_ok=True)
             Path(out_path).unlink(missing_ok=True)
+
+    def test_notes_just_before_grid_boundary_snap_forward(self):
+        self.assertEqual(_midi_tick_to_row(479, 480), 4)
+        self.assertEqual(_midi_tick_to_row(1918, 480), 16)
+        self.assertEqual(_midi_tick_to_row(1919, 480), 16)
+
+    def test_genuine_off_grid_notes_stay_on_current_row(self):
+        # Halfway through a row is intentional timing, not boundary jitter.
+        self.assertEqual(_midi_tick_to_row(705, 120), 23)
 
     def test_off_grid_notes_not_rounded_to_next_row(self):
         midi_path = Path(__file__).with_name("test.mid")

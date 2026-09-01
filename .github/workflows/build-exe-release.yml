@@ -57,6 +57,7 @@ jobs:
         shell: pwsh
         run: |
           pyinstaller --clean --onefile --windowed `
+            --collect-all tkinterdnd2 `
             --add-binary "vendor\fluidsynth\libfluidsynth-3.dll;." `
             --add-binary "vendor\fluidsynth\SDL3.dll;." `
             --add-binary "vendor\fluidsynth\sndfile.dll;." `

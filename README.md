@@ -5,7 +5,7 @@
 ## Features
 
 - MIDI to Impulse Tracker (`.it`) conversion
-- CLI and Tkinter GUI
+- CLI and Tkinter GUI with MIDI/SF2 drag-and-drop support
 - SoundFont argument is optional: a GeneralUser GS SF2 is downloaded and cached automatically on first use
 - Explicit custom SF2 SoundFonts are still supported
 - MIDI time signatures such as 3/4, 6/8 and mid-song time-signature changes are reflected in IT pattern lengths
@@ -21,7 +21,7 @@ No separate FluidSynth installation is required. The release workflow bundles th
 ### Running from Python source
 
 - Python 3.7+
-- Python packages in `requirements.txt` (`mido`, `numpy`)
+- Python packages in `requirements.txt` (`mido`, `numpy`, `tkinterdnd2`)
 - **FluidSynth C library** for SoundFont rendering
 
 Install FluidSynth for source runs as appropriate for your platform:
@@ -86,7 +86,7 @@ You can also set `MIDI2IT_SOUNDFONT` to use a preferred default SF2 without pass
 python midi2it_gui.py
 ```
 
-Select a MIDI file, optionally select an SF2 file, choose the output path, and press **Convert**. Leaving the SoundFont field empty uses the same automatic download/cache behavior as the CLI.
+Select a MIDI file, optionally select an SF2 file, choose the output path, and press **Convert**. You can also drag and drop `.mid`/`.midi` files onto the MIDI field and `.sf2` files onto the SoundFont field. When you browse for a different output directory, the current output filename is preserved. Leaving the SoundFont field empty uses the same automatic download/cache behavior as the CLI.
 
 ## Windows releases
 

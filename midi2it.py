@@ -15,6 +15,7 @@ import ctypes.util
 NUM_CHANNELS = 64
 NORMALIZATION_TARGET_INT16 = 32767.0
 ROW_RESOLUTION = 4
+ROW_BOUNDARY_SNAP_DIVISOR = 8
 DEFAULT_SOUNDFONT_URL = (
     "https://raw.githubusercontent.com/mrbumpy409/GeneralUser-GS/"
     "684543d5e5efaef08d02be50dcda8d552478fa60/GeneralUser-GS.sf2"
@@ -377,6 +378,26 @@ def _rows_per_pattern_for_signature(numerator, denominator):
     return max(1, min(rows_per_measure * 4, 200))
 
 
+def _midi_tick_to_row(abs_tick, ticks_per_beat, row_resolution=ROW_RESOLUTION):
+    """Map a MIDI tick to an IT row without pulling near-boundary notes early.
+
+    Sequencers can place notes a few MIDI ticks before an intended grid line.
+    Flooring those timestamps moves such notes a full IT row early. Preserve
+    genuine off-grid timing, but snap the final 1/8 of a row to the boundary.
+    """
+    if ticks_per_beat <= 0:
+        raise ValueError("Invalid MIDI ticks_per_beat")
+    scaled_tick = max(0, int(abs_tick)) * int(row_resolution)
+    row, remainder = divmod(scaled_tick, int(ticks_per_beat))
+    if (
+        remainder
+        and remainder * ROW_BOUNDARY_SNAP_DIVISOR
+        >= int(ticks_per_beat) * (ROW_BOUNDARY_SNAP_DIVISOR - 1)
+    ):
+        row += 1
+    return row
+
+
 def _pattern_spans_for_midi(mid, actual_last_row, row_resolution=ROW_RESOLUTION):
     if mid.ticks_per_beat <= 0:
         raise ValueError("Invalid MIDI ticks_per_beat")
@@ -484,7 +505,7 @@ def convert_midi_to_it(midi_path, sf2_path=None, output_path=None):
             bank = 128 if msg.channel == 9 else 0
             current_channel_programs[msg.channel] = (bank, msg.program)
         elif msg.type == 'note_on' and msg.velocity > 0:
-            row_idx = int((abs_tick * ROW_RESOLUTION) / mid.ticks_per_beat)
+            row_idx = _midi_tick_to_row(abs_tick, mid.ticks_per_beat)
             if row_idx >= max_rows: continue
             
             if msg.channel == 9:

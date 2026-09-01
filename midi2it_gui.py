@@ -4,7 +4,26 @@ import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox, scrolledtext, ttk
 
+try:
+    from tkinterdnd2 import DND_FILES, TkinterDnD
+except ImportError:  # Keep the GUI usable for source runs without the optional package.
+    DND_FILES = None
+    TkinterDnD = None
+
 from midi2it import convert_midi_to_it
+
+
+_TkBase = TkinterDnD.Tk if TkinterDnD is not None else tk.Tk
+
+
+def _output_dialog_defaults(output_path, midi_path):
+    current = (output_path or "").strip()
+    midi = (midi_path or "").strip()
+    if current:
+        return os.path.dirname(os.path.abspath(current)), os.path.basename(current)
+    if midi:
+        return os.path.dirname(os.path.abspath(midi)), os.path.splitext(os.path.basename(midi))[0] + ".it"
+    return None, None
 
 
 class _GuiWriter:
@@ -28,7 +47,7 @@ class _GuiWriter:
         self.text_widget.configure(state="disabled")
 
 
-class Midi2ItApp(tk.Tk):
+class Midi2ItApp(_TkBase):
     def __init__(self):
         super().__init__()
         self.title("midi2it")
@@ -48,11 +67,13 @@ class Midi2ItApp(tk.Tk):
         root.rowconfigure(4, weight=1)
 
         ttk.Label(root, text="MIDI file").grid(row=0, column=0, sticky="w", padx=(0, 8), pady=5)
-        ttk.Entry(root, textvariable=self.midi_var).grid(row=0, column=1, sticky="ew", pady=5)
+        self.midi_entry = ttk.Entry(root, textvariable=self.midi_var)
+        self.midi_entry.grid(row=0, column=1, sticky="ew", pady=5)
         ttk.Button(root, text="Browse...", command=self._browse_midi).grid(row=0, column=2, padx=(8, 0), pady=5)
 
         ttk.Label(root, text="SoundFont (optional)").grid(row=1, column=0, sticky="w", padx=(0, 8), pady=5)
-        ttk.Entry(root, textvariable=self.soundfont_var).grid(row=1, column=1, sticky="ew", pady=5)
+        self.soundfont_entry = ttk.Entry(root, textvariable=self.soundfont_var)
+        self.soundfont_entry.grid(row=1, column=1, sticky="ew", pady=5)
         ttk.Button(root, text="Browse...", command=self._browse_soundfont).grid(row=1, column=2, padx=(8, 0), pady=5)
 
         hint = "Leave SoundFont empty to automatically download and cache GeneralUser GS."
@@ -72,12 +93,48 @@ class Midi2ItApp(tk.Tk):
         self.convert_button = ttk.Button(actions, text="Convert", command=self._start_conversion)
         self.convert_button.grid(row=0, column=1, sticky="e")
 
+        self._register_drop_target(self.midi_entry, self._drop_midi)
+        self._register_drop_target(self.soundfont_entry, self._drop_soundfont)
+
+    def _register_drop_target(self, widget, handler):
+        if DND_FILES is None:
+            return
+        widget.drop_target_register(DND_FILES)
+        widget.dnd_bind("<<Drop>>", handler)
+
+    def _dropped_paths(self, event):
+        try:
+            return self.tk.splitlist(event.data)
+        except (AttributeError, tk.TclError):
+            return ()
+
+    def _set_midi_path(self, path):
+        self.midi_var.set(path)
+        if not self.output_var.get().strip():
+            self.output_var.set(os.path.splitext(path)[0] + ".it")
+
+    def _drop_midi(self, event):
+        for path in self._dropped_paths(event):
+            if os.path.isfile(path) and path.lower().endswith((".mid", ".midi")):
+                self._set_midi_path(path)
+                self.status_var.set("MIDI file dropped")
+                return "break"
+        self.status_var.set("Drop a .mid or .midi file")
+        return "break"
+
+    def _drop_soundfont(self, event):
+        for path in self._dropped_paths(event):
+            if os.path.isfile(path) and path.lower().endswith(".sf2"):
+                self.soundfont_var.set(path)
+                self.status_var.set("SoundFont dropped")
+                return "break"
+        self.status_var.set("Drop an .sf2 file")
+        return "break"
+
     def _browse_midi(self):
         path = filedialog.askopenfilename(title="Select MIDI file", filetypes=[("MIDI files", "*.mid *.midi"), ("All files", "*.*")])
         if path:
-            self.midi_var.set(path)
-            if not self.output_var.get().strip():
-                self.output_var.set(os.path.splitext(path)[0] + ".it")
+            self._set_midi_path(path)
 
     def _browse_soundfont(self):
         path = filedialog.askopenfilename(title="Select SoundFont", filetypes=[("SoundFont 2", "*.sf2"), ("All files", "*.*")])
@@ -85,7 +142,17 @@ class Midi2ItApp(tk.Tk):
             self.soundfont_var.set(path)
 
     def _browse_output(self):
-        path = filedialog.asksaveasfilename(title="Save IT file", defaultextension=".it", filetypes=[("Impulse Tracker", "*.it"), ("All files", "*.*")])
+        initial_dir, initial_file = _output_dialog_defaults(self.output_var.get(), self.midi_var.get())
+        options = {
+            "title": "Save IT file",
+            "defaultextension": ".it",
+            "filetypes": [("Impulse Tracker", "*.it"), ("All files", "*.*")],
+        }
+        if initial_dir:
+            options["initialdir"] = initial_dir
+        if initial_file:
+            options["initialfile"] = initial_file
+        path = filedialog.asksaveasfilename(**options)
         if path:
             self.output_var.set(path)
 
