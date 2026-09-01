@@ -70,9 +70,10 @@ jobs:
         run: |
           $marker = Join-Path $PWD "dnd-check.txt"
           Remove-Item $marker -ErrorAction SilentlyContinue
-          & .\dist\midi2it-gui.exe --check-dnd $marker
-          if ($LASTEXITCODE -ne 0) {
-            throw "midi2it-gui.exe --check-dnd exited with code $LASTEXITCODE"
+          $process = Start-Process -FilePath .\dist\midi2it-gui.exe `
+            -ArgumentList @("--check-dnd", $marker) -Wait -PassThru
+          if ($process.ExitCode -ne 0) {
+            throw "midi2it-gui.exe --check-dnd exited with code $($process.ExitCode)"
           }
           if (!(Test-Path $marker)) {
             throw "GUI DnD smoke test did not create its marker file"
