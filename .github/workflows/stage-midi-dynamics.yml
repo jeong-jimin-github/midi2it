@@ -1,0 +1,54 @@
+name: Stage MIDI dynamics validation
+
+on:
+  push:
+    branches:
+      - midi-dynamics-staging
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    if: ${{ !contains(github.event.head_commit.message, '[validated-stage]') }}
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - name: Finalize staged source
+        shell: pwsh
+        run: |
+          @'
+          from pathlib import Path
+
+          path = Path("midi2it.py")
+          lines = path.read_text(encoding="utf-8").splitlines()
+          found = False
+          for index, line in enumerate(lines):
+              if 'print(f"Velocity layers:' in line:
+                  lines[index] = '''    print(f"Velocity layers: {', '.join(map(str, velocity_layers))}")'''
+                  found = True
+          text = "\n".join(lines) + "\n"
+          text = text.replace("min(int(v) , 64)", "min(int(v), 64)")
+          path.write_text(text, encoding="utf-8")
+          if not found:
+              raise SystemExit("Velocity-layer status line was not found")
+          '@ | python
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Compile check
+        run: python -m py_compile midi2it.py midi2it_gui.py test_midi2it.py
+      - name: Tests
+        run: python -m unittest -v
+      - name: Diff check
+        run: git diff --check
+      - name: Commit validated source
+        shell: pwsh
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add midi2it.py
+          git commit -m "chore: validate staged MIDI dynamics source [validated-stage]"
+          git push origin HEAD:midi-dynamics-staging
