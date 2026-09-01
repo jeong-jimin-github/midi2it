@@ -1,0 +1,171 @@
+name: Stage SoundFont effects fix
+
+on:
+  push:
+    branches: [effects-staging]
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: effects-staging
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Apply fix
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          p = Path('midi2it.py')
+          s = p.read_text()
+
+          s = s.replace(
+              'MIDI_DEFAULT_PAN = 64\nMIDI_DEFAULT_PITCH_RANGE = 2.0\n',
+              'MIDI_DEFAULT_PAN = 64\nMIDI_DEFAULT_MODULATION = 0\nMIDI_DEFAULT_REVERB_SEND = 40\nMIDI_DEFAULT_CHORUS_SEND = 0\nMIDI_DEFAULT_PITCH_RANGE = 2.0\n'
+          )
+
+          s = s.replace(
+              '        self.fs.fluid_synth_noteon.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int]\n        self.fs.fluid_synth_write_s16.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_void_p, ctypes.c_int, ctypes.c_int]\n',
+              '        self.fs.fluid_synth_noteon.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int]\n        if hasattr(self.fs, "fluid_synth_cc"):\n            self.fs.fluid_synth_cc.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int]\n        self.fs.fluid_synth_write_s16.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_void_p, ctypes.c_int, ctypes.c_int]\n'
+          )
+
+          s = s.replace(
+              '        release_sec=0.75,\n        normalize=True,\n    ):',
+              '        release_sec=0.75,\n        normalize=True,\n        modulation=MIDI_DEFAULT_MODULATION,\n        reverb_send=MIDI_DEFAULT_REVERB_SEND,\n        chorus_send=MIDI_DEFAULT_CHORUS_SEND,\n    ):'
+          )
+
+          s = s.replace(
+              '        self.fs.fluid_synth_program_select(self.synth, 0, self.sfid, bank, prog)\n        self.fs.fluid_synth_noteon(self.synth, 0, note, velocity)\n',
+              '        self.fs.fluid_synth_program_select(self.synth, 0, self.sfid, bank, prog)\n        if hasattr(self.fs, "fluid_synth_cc"):\n            for controller, value in (\n                (1, modulation),\n                (91, reverb_send),\n                (93, chorus_send),\n            ):\n                value = max(0, min(int(value), 127))\n                self.fs.fluid_synth_cc(self.synth, 0, controller, value)\n        self.fs.fluid_synth_noteon(self.synth, 0, note, velocity)\n'
+          )
+
+          marker = '\n\ndef _collect_sample_specs(mid, base_note_options):\n'
+          helper = '''\n\ndef _effect_cc_bucket(value, quantum=1):\n    value = max(0, min(int(value), 127))\n    quantum = max(1, int(quantum))\n    if quantum == 1:\n        return value\n    return max(0, min(127, int(round(value / float(quantum))) * quantum))\n\n\ndef _collect_sample_specs(mid, base_note_options, effect_quantum=1):\n'''
+          if marker not in s:
+              raise SystemExit('collector marker not found')
+          s = s.replace(marker, helper, 1)
+
+          s = s.replace(
+              '    sustain = [False] * 16\n    tempo = 500000\n',
+              '    sustain = [False] * 16\n    cc_modulation = [MIDI_DEFAULT_MODULATION] * 16\n    cc_reverb = [MIDI_DEFAULT_REVERB_SEND] * 16\n    cc_chorus = [MIDI_DEFAULT_CHORUS_SEND] * 16\n    tempo = 500000\n',
+              1
+          )
+
+          s = s.replace(
+              '            elif msg.control == 64:\n                was_down = sustain[msg.channel]\n',
+              '            elif msg.control == 1:\n                cc_modulation[msg.channel] = msg.value\n            elif msg.control == 91:\n                cc_reverb[msg.channel] = msg.value\n            elif msg.control == 93:\n                cc_chorus[msg.channel] = msg.value\n            elif msg.control == 64:\n                was_down = sustain[msg.channel]\n',
+              1
+          )
+
+          old_spec = '''            if msg.channel == 9:\n                base = msg.note\n                spec = (bank, prog, base, True)\n            else:\n                base = min(base_note_options, key=lambda candidate: abs(msg.note - candidate))\n                spec = (bank, prog, base, False)\n'''
+          new_spec = '''            if msg.channel == 9:\n                base = msg.note\n                is_drum = True\n            else:\n                base = min(base_note_options, key=lambda candidate: abs(msg.note - candidate))\n                is_drum = False\n            spec = (\n                bank,\n                prog,\n                base,\n                is_drum,\n                _effect_cc_bucket(cc_modulation[msg.channel], effect_quantum),\n                _effect_cc_bucket(cc_reverb[msg.channel], effect_quantum),\n                _effect_cc_bucket(cc_chorus[msg.channel], effect_quantum),\n            )\n'''
+          if old_spec not in s:
+              raise SystemExit('sample spec block not found')
+          s = s.replace(old_spec, new_spec, 1)
+
+          old_collect = '''    base_note_options = [36, 60, 84, 108]\n    sample_specs, longest_hold = _collect_sample_specs(mid, base_note_options)\n    velocity_layers = _choose_velocity_layers(len(sample_specs))\n    print(f"Velocity layers: {', '.join(map(str, velocity_layers))}")\n'''
+          new_collect = '''    base_note_options = [36, 60, 84, 108]\n    effect_quantum = 1\n    while True:\n        sample_specs, longest_hold = _collect_sample_specs(\n            mid, base_note_options, effect_quantum=effect_quantum\n        )\n        if len(sample_specs) <= MAX_IT_SAMPLES or effect_quantum >= 32:\n            break\n        effect_quantum *= 2\n    if effect_quantum > 1:\n        print(\n            f"Effect controller states quantized to {effect_quantum}-step values "\n            "to stay within the IT sample limit."\n        )\n    if len(sample_specs) > MAX_IT_SAMPLES:\n        raise ValueError(\n            f"MIDI requires {len(sample_specs)} distinct instrument/effect states, "\n            f"exceeding the IT sample limit of {MAX_IT_SAMPLES}."\n        )\n    velocity_layers = _choose_velocity_layers(len(sample_specs))\n    print(f"Velocity layers: {', '.join(map(str, velocity_layers))}")\n'''
+          if old_collect not in s:
+              raise SystemExit('collect call block not found')
+          s = s.replace(old_collect, new_collect, 1)
+
+          old_render_loop = '''    for bank, prog, note, is_drum in sample_specs:\n        hold_sec = 1.0 if is_drum else max(1.0, min(8.0, longest_hold[(bank, prog, note, is_drum)] + 0.25))\n        for layer_velocity in velocity_layers:\n            name = (\n                f"Drum {prog}:{note} v{layer_velocity}"\n                if is_drum\n                else f"Instr {bank}:{prog}@{note} v{layer_velocity}"\n            )\n            print(f"  Recording {name}...")\n            data = fs.render_sample(\n                bank,\n                prog,\n                note=note,\n                velocity=layer_velocity,\n                duration_sec=hold_sec,\n                release_sec=0.75,\n                normalize=False,\n            )\n            playback_root = 60 if is_drum else note\n            identity = (playback_root, len(data), hashlib.sha256(data).digest())\n            sample_id = sample_identity_to_id.get(identity)\n            if sample_id is None:\n                samples.append({"name": name, "data": data})\n                sample_id = len(samples)\n                sample_identity_to_id[identity] = sample_id\n            else:\n                print(f"    Reusing identical sample #{sample_id}")\n            if is_drum:\n                drum_sample_map[(bank, prog, note, layer_velocity)] = sample_id\n            else:\n                melodic_sample_map[(bank, prog, note, layer_velocity)] = sample_id\n'''
+          new_render_loop = '''    for bank, prog, note, is_drum, modulation, reverb_send, chorus_send in sample_specs:\n        spec_key = (bank, prog, note, is_drum, modulation, reverb_send, chorus_send)\n        hold_sec = 1.0 if is_drum else max(1.0, min(8.0, longest_hold[spec_key] + 0.25))\n        for layer_velocity in velocity_layers:\n            fx_suffix = (\n                ""\n                if (modulation, reverb_send, chorus_send)\n                == (MIDI_DEFAULT_MODULATION, MIDI_DEFAULT_REVERB_SEND, MIDI_DEFAULT_CHORUS_SEND)\n                else f" fx{modulation}-{reverb_send}-{chorus_send}"\n            )\n            name = (\n                f"Drum {prog}:{note} v{layer_velocity}{fx_suffix}"\n                if is_drum\n                else f"Instr {bank}:{prog}@{note} v{layer_velocity}{fx_suffix}"\n            )\n            print(f"  Recording {name}...")\n            data = fs.render_sample(\n                bank,\n                prog,\n                note=note,\n                velocity=layer_velocity,\n                duration_sec=hold_sec,\n                release_sec=0.75,\n                normalize=False,\n                modulation=modulation,\n                reverb_send=reverb_send,\n                chorus_send=chorus_send,\n            )\n            playback_root = 60 if is_drum else note\n            identity = (playback_root, len(data), hashlib.sha256(data).digest())\n            sample_id = sample_identity_to_id.get(identity)\n            if sample_id is None:\n                samples.append({"name": name, "data": data})\n                sample_id = len(samples)\n                sample_identity_to_id[identity] = sample_id\n            else:\n                print(f"    Reusing identical sample #{sample_id}")\n            map_key = (\n                bank, prog, note, layer_velocity, modulation, reverb_send, chorus_send\n            )\n            if is_drum:\n                drum_sample_map[map_key] = sample_id\n            else:\n                melodic_sample_map[map_key] = sample_id\n'''
+          if old_render_loop not in s:
+              raise SystemExit('render loop not found')
+          s = s.replace(old_render_loop, new_render_loop, 1)
+
+          s = s.replace(
+              '    cc_pan = [MIDI_DEFAULT_PAN] * 16\n    sustain = [False] * 16\n',
+              '    cc_pan = [MIDI_DEFAULT_PAN] * 16\n    cc_modulation = [MIDI_DEFAULT_MODULATION] * 16\n    cc_reverb = [MIDI_DEFAULT_REVERB_SEND] * 16\n    cc_chorus = [MIDI_DEFAULT_CHORUS_SEND] * 16\n    sustain = [False] * 16\n',
+              1
+          )
+          s = s.replace('    unsupported_effect_cc = set()\n', '    mid_note_effect_cc = set()\n', 1)
+
+          old_effect_ctl = '''            elif ctl == 6 and rpn_msb[ch] == 0 and rpn_lsb[ch] == 0:\n                pitch_range[ch] = max(0.0, min(float(val), 24.0))\n            elif ctl in (1, 91, 93):\n                # IT sample mode has no direct General MIDI modulation/reverb/chorus send.\n                # The SoundFont's default reverb/chorus tail is baked into rendered PCM,\n                # but dynamic send/mod-wheel changes cannot be represented exactly.\n                unsupported_effect_cc.add(ctl)\n'''
+          new_effect_ctl = '''            elif ctl == 6 and rpn_msb[ch] == 0 and rpn_lsb[ch] == 0:\n                pitch_range[ch] = max(0.0, min(float(val), 24.0))\n            elif ctl in (1, 91, 93):\n                if any(\n                    voice is not None and voice["midi_channel"] == ch\n                    for voice in active_voice\n                ):\n                    mid_note_effect_cc.add(ctl)\n                if ctl == 1:\n                    cc_modulation[ch] = val\n                elif ctl == 91:\n                    cc_reverb[ch] = val\n                else:\n                    cc_chorus[ch] = val\n'''
+          if old_effect_ctl not in s:
+              raise SystemExit('effect control block not found')
+          s = s.replace(old_effect_ctl, new_effect_ctl, 1)
+
+          s = s.replace(
+              '                cc_pan[ch] = MIDI_DEFAULT_PAN\n                sustain[ch] = False\n',
+              '                cc_pan[ch] = MIDI_DEFAULT_PAN\n                cc_modulation[ch] = MIDI_DEFAULT_MODULATION\n                cc_reverb[ch] = MIDI_DEFAULT_REVERB_SEND\n                cc_chorus[ch] = MIDI_DEFAULT_CHORUS_SEND\n                sustain[ch] = False\n',
+              1
+          )
+
+          old_note_map = '''        layer_velocity = _velocity_layer_for(msg.velocity, velocity_layers)\n        if ch == 9:\n            instr_idx = drum_sample_map.get((bank, prog, msg.note, layer_velocity), 1)\n            note_to_play = 60\n        else:\n            best_base = min(base_note_options, key=lambda base: abs(msg.note - base))\n            instr_idx = melodic_sample_map.get((bank, prog, best_base, layer_velocity), 1)\n            note_to_play = msg.note - best_base + 60 + int(round(pitch_semitones[ch]))\n'''
+          new_note_map = '''        layer_velocity = _velocity_layer_for(msg.velocity, velocity_layers)\n        modulation = _effect_cc_bucket(cc_modulation[ch], effect_quantum)\n        reverb_send = _effect_cc_bucket(cc_reverb[ch], effect_quantum)\n        chorus_send = _effect_cc_bucket(cc_chorus[ch], effect_quantum)\n        if ch == 9:\n            instr_idx = drum_sample_map.get(\n                (bank, prog, msg.note, layer_velocity, modulation, reverb_send, chorus_send), 1\n            )\n            note_to_play = 60\n        else:\n            best_base = min(base_note_options, key=lambda base: abs(msg.note - base))\n            instr_idx = melodic_sample_map.get(\n                (bank, prog, best_base, layer_velocity, modulation, reverb_send, chorus_send), 1\n            )\n            note_to_play = msg.note - best_base + 60 + int(round(pitch_semitones[ch]))\n'''
+          if old_note_map not in s:
+              raise SystemExit('note map block not found')
+          s = s.replace(old_note_map, new_note_map, 1)
+
+          old_warning = '''    if unsupported_effect_cc:\n        labels = {1: "CC1 modulation", 91: "CC91 reverb send", 93: "CC93 chorus send"}\n        names = ", ".join(labels[cc] for cc in sorted(unsupported_effect_cc))\n        print(\n            "Warning: " + names +\n            " cannot be represented exactly by standard IT sample-mode effects; "\n            "SoundFont default effect tails are baked into the rendered samples."\n        )\n'''
+          new_warning = '''    if mid_note_effect_cc:\n        labels = {1: "CC1 modulation", 91: "CC91 reverb send", 93: "CC93 chorus send"}\n        names = ", ".join(labels[cc] for cc in sorted(mid_note_effect_cc))\n        print(\n            "Warning: mid-note " + names +\n            " automation changes after sample playback has started; the value at each "\n            "note-on is baked through FluidSynth, and later notes use the updated value."\n        )\n'''
+          if old_warning not in s:
+              raise SystemExit('warning block not found')
+          s = s.replace(old_warning, new_warning, 1)
+
+          p.write_text(s)
+
+          t = Path('test_midi2it.py')
+          ts = t.read_text()
+          ts = ts.replace(
+              '            self.noteon_velocity = None\n            self.reset_count = 0\n',
+              '            self.noteon_velocity = None\n            self.cc_calls = []\n            self.reset_count = 0\n',
+              1
+          )
+          ts = ts.replace(
+              '        def fluid_synth_noteon(self, synth, chan, note, velocity):\n            self.noteon_velocity = velocity\n            return 0\n\n',
+              '        def fluid_synth_noteon(self, synth, chan, note, velocity):\n            self.noteon_velocity = velocity\n            return 0\n\n        def fluid_synth_cc(self, synth, chan, control, value):\n            self.cc_calls.append((chan, control, value))\n            return 0\n\n',
+              1
+          )
+          insert_after = '''    def test_render_sample_uses_requested_velocity(self):\n        synth = self._make_synth(self.FakeFS())\n        synth.render_sample(bank=0, prog=0, note=60, velocity=72, duration_sec=1.0)\n        self.assertEqual(synth.fs.noteon_velocity, 72)\n\n'''
+          effect_test = '''    def test_render_sample_applies_midi_effect_controllers_before_note_on(self):\n        synth = self._make_synth(self.FakeFS())\n        synth.render_sample(\n            bank=0, prog=0, note=60, velocity=72, duration_sec=1.0,\n            modulation=37, reverb_send=88, chorus_send=19,\n        )\n        self.assertEqual(\n            synth.fs.cc_calls,\n            [(0, 1, 37), (0, 91, 88), (0, 93, 19)],\n        )\n\n'''
+          if insert_after not in ts:
+              raise SystemExit('render test insertion point not found')
+          ts = ts.replace(insert_after, insert_after + effect_test, 1)
+
+          class_marker = '\n\nclass FluidSynthDiscoveryTests(unittest.TestCase):\n'
+          conversion_test = '''\n\nclass SoundFontEffectsRegressionTests(unittest.TestCase):\n    def test_static_reverb_send_creates_distinct_baked_sample_state(self):\n        with tempfile.NamedTemporaryFile(suffix=".mid", delete=False) as midi_tmp:\n            midi_path = midi_tmp.name\n        with tempfile.NamedTemporaryFile(suffix=".it", delete=False) as out_tmp:\n            out_path = out_tmp.name\n        try:\n            mid = mido.MidiFile(ticks_per_beat=480)\n            track = mido.MidiTrack()\n            mid.tracks.append(track)\n            track.append(mido.Message("note_on", note=60, velocity=100, time=0, channel=0))\n            track.append(mido.Message("note_off", note=60, velocity=0, time=480, channel=0))\n            track.append(mido.Message("control_change", control=91, value=100, time=0, channel=0))\n            track.append(mido.Message("note_on", note=60, velocity=100, time=0, channel=0))\n            track.append(mido.Message("note_off", note=60, velocity=0, time=480, channel=0))\n            mid.save(midi_path)\n\n            calls = []\n\n            class FakeFluidSynth:\n                def __init__(self, sf2_path):\n                    pass\n\n                def render_sample(self, bank, prog, note=60, velocity=127, **kwargs):\n                    calls.append((velocity, kwargs.get("modulation"), kwargs.get("reverb_send"), kwargs.get("chorus_send")))\n                    value = int(kwargs.get("reverb_send", 0))\n                    return bytes([value & 0x7F, 0]) * 8\n\n            with patch("midi2it.FluidSynth", FakeFluidSynth), patch("midi2it.write_it"):\n                convert_midi_to_it(midi_path, "dummy.sf2", out_path)\n\n            reverb_values = {call[2] for call in calls}\n            self.assertIn(40, reverb_values)\n            self.assertIn(100, reverb_values)\n        finally:\n            Path(midi_path).unlink(missing_ok=True)\n            Path(out_path).unlink(missing_ok=True)\n'''
+          if class_marker not in ts:
+              raise SystemExit('conversion test insertion point not found')
+          ts = ts.replace(class_marker, conversion_test + class_marker, 1)
+          t.write_text(ts)
+
+          r = Path('README.md')
+          rs = r.read_text()
+          rs = rs.replace(
+              '- MIDI CC7 volume, CC11 expression, CC10 pan, bank select (CC0/CC32), program changes, and sustain (CC64)\n',
+              '- MIDI CC7 volume, CC11 expression, CC10 pan, bank select (CC0/CC32), program changes, and sustain (CC64)\n- CC1 modulation, CC91 reverb-send, and CC93 chorus-send are applied through FluidSynth and baked into the SoundFont sample state at each note-on\n'
+          )
+          rs = rs.replace(
+              "- FluidSynth's SoundFont release/effect tail is included in each rendered sample. Dynamic MIDI CC1 modulation, CC91 reverb-send, and CC93 chorus-send changes do not have direct equivalents in standard IT sample mode and therefore cannot be reproduced exactly. The converter reports a warning when those controllers are present.\n",
+              "- CC1 modulation, CC91 reverb-send, and CC93 chorus-send are sent to FluidSynth before each note-on, so static/per-note effect settings are rendered with the SoundFont rather than ignored. If one of these controllers changes while a note is already sounding, the current IT sample cannot change its baked effect state mid-playback; subsequent notes use the new value and the converter only warns for that mid-note automation case.\n"
+          )
+          rs = rs.replace('Each push builds and publishes:\n', 'Each push to `main` builds and publishes:\n')
+          r.write_text(rs)
+          PY
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Compile check
+        run: python -m py_compile midi2it.py midi2it_gui.py test_midi2it.py
+      - name: Tests
+        run: python -m unittest -v
+      - name: Diff check
+        run: git diff --check
+      - name: Commit validated fix
+        shell: bash
+        run: |
+          git config user.name "Jeong Jimin"
+          git config user.email "k154085@kansai-u.ac.jp"
+          git add midi2it.py test_midi2it.py README.md
+          git commit -m "fix: bake MIDI effect controllers into SoundFont samples"
+          git push origin HEAD:effects-staging
