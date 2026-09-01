@@ -1,0 +1,37 @@
+name: Stage effect test compatibility
+
+on:
+  push:
+    branches: [effects-staging]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: effects-staging
+      - name: Update FakeFluidSynth signature
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('test_midi2it.py')
+          s = p.read_text()
+          old = '''        release_sec=0.75,\n        normalize=True,\n    ):\n        type(self).calls.append(\n            {\n                "bank": bank,\n                "prog": prog,\n                "note": note,\n                "velocity": velocity,\n                "duration_sec": duration_sec,\n                "release_sec": release_sec,\n                "normalize": normalize,\n            }\n        )\n'''
+          new = '''        release_sec=0.75,\n        normalize=True,\n        modulation=0,\n        reverb_send=40,\n        chorus_send=0,\n    ):\n        type(self).calls.append(\n            {\n                "bank": bank,\n                "prog": prog,\n                "note": note,\n                "velocity": velocity,\n                "duration_sec": duration_sec,\n                "release_sec": release_sec,\n                "normalize": normalize,\n                "modulation": modulation,\n                "reverb_send": reverb_send,\n                "chorus_send": chorus_send,\n            }\n        )\n'''
+          if old not in s:
+              raise SystemExit('FakeFluidSynth block not found')
+          p.write_text(s.replace(old, new, 1))
+          PY
+      - name: Commit
+        run: |
+          git config user.name "Jeong Jimin"
+          git config user.email "k154085@kansai-u.ac.jp"
+          git add test_midi2it.py
+          git commit -m "test: accept SoundFont effect controller render args"
+          git push origin HEAD:effects-staging
