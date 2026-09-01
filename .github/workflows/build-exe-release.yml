@@ -54,15 +54,34 @@ jobs:
             --add-binary "vendor\fluidsynth\sndfile.dll;." `
             midi2it.py --name midi2it
 
-      - name: Build GUI EXE with FluidSynth
+      - name: Build GUI EXE with FluidSynth and tkDnD
         shell: pwsh
         run: |
           pyinstaller --clean --onefile --windowed `
+            --additional-hooks-dir=. `
             --collect-all tkinterdnd2 `
             --add-binary "vendor\fluidsynth\libfluidsynth-3.dll;." `
             --add-binary "vendor\fluidsynth\SDL3.dll;." `
             --add-binary "vendor\fluidsynth\sndfile.dll;." `
             midi2it_gui.py --name midi2it-gui
+
+      - name: Verify bundled tkDnD loads from GUI EXE
+        shell: pwsh
+        run: |
+          $marker = Join-Path $PWD "dnd-check.txt"
+          Remove-Item $marker -ErrorAction SilentlyContinue
+          & .\dist\midi2it-gui.exe --check-dnd $marker
+          if ($LASTEXITCODE -ne 0) {
+            throw "midi2it-gui.exe --check-dnd exited with code $LASTEXITCODE"
+          }
+          if (!(Test-Path $marker)) {
+            throw "GUI DnD smoke test did not create its marker file"
+          }
+          $result = (Get-Content $marker -Raw).Trim()
+          Write-Host $result
+          if (!$result.StartsWith("OK tkdnd=")) {
+            throw "Bundled tkDnD smoke test failed: $result"
+          }
 
       - name: Verify bundled FluidSynth loads from CLI EXE
         shell: pwsh
@@ -81,7 +100,7 @@ jobs:
         with:
           tag_name: ${{ steps.tag.outputs.tag }}
           name: ${{ steps.tag.outputs.tag }}
-          body: Windows x64 build with FluidSynth ${{ env.FLUIDSYNTH_VERSION }} bundled inside both executables.
+          body: Windows x64 build with FluidSynth ${{ env.FLUIDSYNTH_VERSION }} and tkinterdnd2/tkDnD bundled inside the GUI executable.
           files: |
             dist/midi2it.exe
             dist/midi2it-gui.exe
