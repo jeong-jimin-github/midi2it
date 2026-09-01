@@ -437,6 +437,45 @@ class SoundFontDownloadTests(unittest.TestCase):
             self.assertEqual(urlopen.call_count, 1)
 
 
+class SoundFontEffectsRegressionTests(unittest.TestCase):
+    def test_static_reverb_send_creates_distinct_baked_sample_state(self):
+        with tempfile.NamedTemporaryFile(suffix=".mid", delete=False) as midi_tmp:
+            midi_path = midi_tmp.name
+        with tempfile.NamedTemporaryFile(suffix=".it", delete=False) as out_tmp:
+            out_path = out_tmp.name
+        try:
+            mid = mido.MidiFile(ticks_per_beat=480)
+            track = mido.MidiTrack()
+            mid.tracks.append(track)
+            track.append(mido.Message("note_on", note=60, velocity=100, time=0, channel=0))
+            track.append(mido.Message("note_off", note=60, velocity=0, time=480, channel=0))
+            track.append(mido.Message("control_change", control=91, value=100, time=0, channel=0))
+            track.append(mido.Message("note_on", note=60, velocity=100, time=0, channel=0))
+            track.append(mido.Message("note_off", note=60, velocity=0, time=480, channel=0))
+            mid.save(midi_path)
+
+            calls = []
+
+            class FakeFluidSynth:
+                def __init__(self, sf2_path):
+                    pass
+
+                def render_sample(self, bank, prog, note=60, velocity=127, **kwargs):
+                    calls.append((velocity, kwargs.get("modulation"), kwargs.get("reverb_send"), kwargs.get("chorus_send")))
+                    value = int(kwargs.get("reverb_send", 0))
+                    return bytes([value & 0x7F, 0]) * 8
+
+            with patch("midi2it.FluidSynth", FakeFluidSynth), patch("midi2it.write_it"):
+                convert_midi_to_it(midi_path, "dummy.sf2", out_path)
+
+            reverb_values = {call[2] for call in calls}
+            self.assertIn(40, reverb_values)
+            self.assertIn(100, reverb_values)
+        finally:
+            Path(midi_path).unlink(missing_ok=True)
+            Path(out_path).unlink(missing_ok=True)
+
+
 class FluidSynthDiscoveryTests(unittest.TestCase):
     def test_runtime_library_dirs_prefer_pyinstaller_bundle(self):
         with tempfile.TemporaryDirectory() as bundle_dir, patch.object(sys, "_MEIPASS", bundle_dir, create=True):
@@ -465,6 +504,7 @@ class FluidSynthRenderTests(unittest.TestCase):
             self.left_value = left_value
             self.right_value = right_value
             self.noteon_velocity = None
+            self.cc_calls = []
             self.reset_count = 0
 
         def fluid_synth_program_select(self, synth, chan, sfid, bank, prog):
@@ -472,6 +512,10 @@ class FluidSynthRenderTests(unittest.TestCase):
 
         def fluid_synth_noteon(self, synth, chan, note, velocity):
             self.noteon_velocity = velocity
+            return 0
+
+        def fluid_synth_cc(self, synth, chan, control, value):
+            self.cc_calls.append((chan, control, value))
             return 0
 
         def fluid_synth_write_s16(self, synth, num_samples, left, loff, linc, right, roff, rinc):
@@ -506,6 +550,17 @@ class FluidSynthRenderTests(unittest.TestCase):
         synth = self._make_synth(self.FakeFS())
         synth.render_sample(bank=0, prog=0, note=60, velocity=72, duration_sec=1.0)
         self.assertEqual(synth.fs.noteon_velocity, 72)
+
+    def test_render_sample_applies_midi_effect_controllers_before_note_on(self):
+        synth = self._make_synth(self.FakeFS())
+        synth.render_sample(
+            bank=0, prog=0, note=60, velocity=72, duration_sec=1.0,
+            modulation=37, reverb_send=88, chorus_send=19,
+        )
+        self.assertEqual(
+            synth.fs.cc_calls,
+            [(0, 1, 37), (0, 91, 88), (0, 93, 19)],
+        )
 
     def test_render_sample_normalizes_positive_audio(self):
         synth = self._make_synth(self.FakeFS(left_value=1000, right_value=1000))

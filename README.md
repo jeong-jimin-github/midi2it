@@ -12,6 +12,7 @@
 - Shared sample-bank normalization, preserving relative SoundFont dynamics while using the available IT headroom
 - Persistent polyphony across IT rows, including MIDI note-off and sustain-pedal handling
 - MIDI CC7 volume, CC11 expression, CC10 pan, bank select (CC0/CC32), program changes, and sustain (CC64)
+- CC1 modulation, CC91 reverb-send, and CC93 chorus-send are applied through FluidSynth and baked into the SoundFont sample state at each note-on
 - Pitch-bend support, including RPN 0 pitch-bend range, approximated with IT linear pitch slides
 - MIDI time signatures such as 3/4, 6/8 and mid-song time-signature changes are reflected in IT pattern lengths
 - Byte-identical rendered samples are deduplicated to reduce output size
@@ -26,7 +27,7 @@
 - Overlapping notes are assigned persistent IT voices so a later note on the same MIDI channel does not prematurely cut an earlier one.
 - Note-off, sustain pedal, all-notes-off, and all-sounds-off are converted to tracker voice releases/cuts.
 - Pitch bend is approximated at IT row resolution. Tracker pitch slides are discrete, so continuously changing bends cannot be bit-for-bit identical to a MIDI synthesizer.
-- FluidSynth's SoundFont release/effect tail is included in each rendered sample. Dynamic MIDI CC1 modulation, CC91 reverb-send, and CC93 chorus-send changes do not have direct equivalents in standard IT sample mode and therefore cannot be reproduced exactly. The converter reports a warning when those controllers are present.
+- CC1 modulation, CC91 reverb-send, and CC93 chorus-send are sent to FluidSynth before each note-on, so static/per-note effect settings are rendered with the SoundFont rather than ignored. If one of these controllers changes while a note is already sounding, the current IT sample cannot change its baked effect state mid-playback; subsequent notes use the new value and the converter only warns for that mid-note automation case.
 
 The SoundFont render is stored as mono PCM for broad Impulse Tracker compatibility; MIDI pan is reconstructed with IT panning rather than relying on a stereo sample.
 
@@ -108,7 +109,7 @@ Select a MIDI file, optionally select an SF2 file, choose the output path, and p
 
 ## Windows releases
 
-Each push builds and publishes:
+Each push to `main` builds and publishes:
 
 - `midi2it.exe` — CLI
 - `midi2it-gui.exe` — GUI

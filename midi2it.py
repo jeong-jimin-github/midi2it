@@ -22,6 +22,9 @@ IT_INITIAL_SPEED = 6
 MIDI_DEFAULT_VOLUME = 100
 MIDI_DEFAULT_EXPRESSION = 127
 MIDI_DEFAULT_PAN = 64
+MIDI_DEFAULT_MODULATION = 0
+MIDI_DEFAULT_REVERB_SEND = 40
+MIDI_DEFAULT_CHORUS_SEND = 0
 MIDI_DEFAULT_PITCH_RANGE = 2.0
 VELOCITY_LAYER_SETS = (
     (32, 64, 96, 127),
@@ -138,6 +141,8 @@ class FluidSynth:
         self.fs.fluid_synth_sfload.restype = ctypes.c_int
         self.fs.fluid_synth_program_select.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int]
         self.fs.fluid_synth_noteon.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int]
+        if hasattr(self.fs, "fluid_synth_cc"):
+            self.fs.fluid_synth_cc.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int]
         self.fs.fluid_synth_write_s16.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_void_p, ctypes.c_int, ctypes.c_int]
         self.fs.fluid_synth_noteoff.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int]
         if hasattr(self.fs, "fluid_synth_system_reset"):
@@ -164,6 +169,9 @@ class FluidSynth:
         duration_sec=1.0,
         release_sec=0.75,
         normalize=True,
+        modulation=MIDI_DEFAULT_MODULATION,
+        reverb_send=MIDI_DEFAULT_REVERB_SEND,
+        chorus_send=MIDI_DEFAULT_CHORUS_SEND,
     ):
         """Render one SF2 note, including its release/effect tail.
 
@@ -178,6 +186,14 @@ class FluidSynth:
         if hasattr(self.fs, "fluid_synth_system_reset"):
             self.fs.fluid_synth_system_reset(self.synth)
         self.fs.fluid_synth_program_select(self.synth, 0, self.sfid, bank, prog)
+        if hasattr(self.fs, "fluid_synth_cc"):
+            for controller, value in (
+                (1, modulation),
+                (91, reverb_send),
+                (93, chorus_send),
+            ):
+                value = max(0, min(int(value), 127))
+                self.fs.fluid_synth_cc(self.synth, 0, controller, value)
         self.fs.fluid_synth_noteon(self.synth, 0, note, velocity)
 
         hold_buf = (ctypes.c_short * (hold_samples * 2))()
@@ -512,12 +528,23 @@ def _program_bank(bank_msb, bank_lsb, channel):
     return (int(bank_msb) << 7) | int(bank_lsb)
 
 
-def _collect_sample_specs(mid, base_note_options):
+def _effect_cc_bucket(value, quantum=1):
+    value = max(0, min(int(value), 127))
+    quantum = max(1, int(quantum))
+    if quantum == 1:
+        return value
+    return max(0, min(127, int(round(value / float(quantum))) * quantum))
+
+
+def _collect_sample_specs(mid, base_note_options, effect_quantum=1):
     merged = mido.merge_tracks(mid.tracks)
     programs = [0] * 16
     bank_msb = [0] * 16
     bank_lsb = [0] * 16
     sustain = [False] * 16
+    cc_modulation = [MIDI_DEFAULT_MODULATION] * 16
+    cc_reverb = [MIDI_DEFAULT_REVERB_SEND] * 16
+    cc_chorus = [MIDI_DEFAULT_CHORUS_SEND] * 16
     tempo = 500000
     abs_sec = 0.0
     active = defaultdict(deque)
@@ -538,6 +565,12 @@ def _collect_sample_specs(mid, base_note_options):
                 bank_msb[msg.channel] = msg.value
             elif msg.control == 32:
                 bank_lsb[msg.channel] = msg.value
+            elif msg.control == 1:
+                cc_modulation[msg.channel] = msg.value
+            elif msg.control == 91:
+                cc_reverb[msg.channel] = msg.value
+            elif msg.control == 93:
+                cc_chorus[msg.channel] = msg.value
             elif msg.control == 64:
                 was_down = sustain[msg.channel]
                 sustain[msg.channel] = msg.value >= 64
@@ -557,10 +590,19 @@ def _collect_sample_specs(mid, base_note_options):
             prog = programs[msg.channel]
             if msg.channel == 9:
                 base = msg.note
-                spec = (bank, prog, base, True)
+                is_drum = True
             else:
                 base = min(base_note_options, key=lambda candidate: abs(msg.note - candidate))
-                spec = (bank, prog, base, False)
+                is_drum = False
+            spec = (
+                bank,
+                prog,
+                base,
+                is_drum,
+                _effect_cc_bucket(cc_modulation[msg.channel], effect_quantum),
+                _effect_cc_bucket(cc_reverb[msg.channel], effect_quantum),
+                _effect_cc_bucket(cc_chorus[msg.channel], effect_quantum),
+            )
             specs.add(spec)
             active[(msg.channel, msg.note)].append((abs_sec, spec))
         elif is_note_off:
@@ -708,7 +750,24 @@ def convert_midi_to_it(midi_path, sf2_path=None, output_path=None):
         raise ValueError("Invalid MIDI ticks_per_beat")
 
     base_note_options = [36, 60, 84, 108]
-    sample_specs, longest_hold = _collect_sample_specs(mid, base_note_options)
+    effect_quantum = 1
+    while True:
+        sample_specs, longest_hold = _collect_sample_specs(
+            mid, base_note_options, effect_quantum=effect_quantum
+        )
+        if len(sample_specs) <= MAX_IT_SAMPLES or effect_quantum >= 32:
+            break
+        effect_quantum *= 2
+    if effect_quantum > 1:
+        print(
+            f"Effect controller states quantized to {effect_quantum}-step values "
+            "to stay within the IT sample limit."
+        )
+    if len(sample_specs) > MAX_IT_SAMPLES:
+        raise ValueError(
+            f"MIDI requires {len(sample_specs)} distinct instrument/effect states, "
+            f"exceeding the IT sample limit of {MAX_IT_SAMPLES}."
+        )
     velocity_layers = _choose_velocity_layers(len(sample_specs))
     print(f"Velocity layers: {', '.join(map(str, velocity_layers))}")
 
@@ -721,13 +780,20 @@ def convert_midi_to_it(midi_path, sf2_path=None, output_path=None):
     melodic_sample_map = {}
     drum_sample_map = {}
 
-    for bank, prog, note, is_drum in sample_specs:
-        hold_sec = 1.0 if is_drum else max(1.0, min(8.0, longest_hold[(bank, prog, note, is_drum)] + 0.25))
+    for bank, prog, note, is_drum, modulation, reverb_send, chorus_send in sample_specs:
+        spec_key = (bank, prog, note, is_drum, modulation, reverb_send, chorus_send)
+        hold_sec = 1.0 if is_drum else max(1.0, min(8.0, longest_hold[spec_key] + 0.25))
         for layer_velocity in velocity_layers:
+            fx_suffix = (
+                ""
+                if (modulation, reverb_send, chorus_send)
+                == (MIDI_DEFAULT_MODULATION, MIDI_DEFAULT_REVERB_SEND, MIDI_DEFAULT_CHORUS_SEND)
+                else f" fx{modulation}-{reverb_send}-{chorus_send}"
+            )
             name = (
-                f"Drum {prog}:{note} v{layer_velocity}"
+                f"Drum {prog}:{note} v{layer_velocity}{fx_suffix}"
                 if is_drum
-                else f"Instr {bank}:{prog}@{note} v{layer_velocity}"
+                else f"Instr {bank}:{prog}@{note} v{layer_velocity}{fx_suffix}"
             )
             print(f"  Recording {name}...")
             data = fs.render_sample(
@@ -738,6 +804,9 @@ def convert_midi_to_it(midi_path, sf2_path=None, output_path=None):
                 duration_sec=hold_sec,
                 release_sec=0.75,
                 normalize=False,
+                modulation=modulation,
+                reverb_send=reverb_send,
+                chorus_send=chorus_send,
             )
             playback_root = 60 if is_drum else note
             identity = (playback_root, len(data), hashlib.sha256(data).digest())
@@ -748,10 +817,13 @@ def convert_midi_to_it(midi_path, sf2_path=None, output_path=None):
                 sample_identity_to_id[identity] = sample_id
             else:
                 print(f"    Reusing identical sample #{sample_id}")
+            map_key = (
+                bank, prog, note, layer_velocity, modulation, reverb_send, chorus_send
+            )
             if is_drum:
-                drum_sample_map[(bank, prog, note, layer_velocity)] = sample_id
+                drum_sample_map[map_key] = sample_id
             else:
-                melodic_sample_map[(bank, prog, note, layer_velocity)] = sample_id
+                melodic_sample_map[map_key] = sample_id
 
     _normalize_sample_bank(samples)
 
@@ -776,13 +848,16 @@ def convert_midi_to_it(midi_path, sf2_path=None, output_path=None):
     cc_volume = [MIDI_DEFAULT_VOLUME] * 16
     cc_expression = [MIDI_DEFAULT_EXPRESSION] * 16
     cc_pan = [MIDI_DEFAULT_PAN] * 16
+    cc_modulation = [MIDI_DEFAULT_MODULATION] * 16
+    cc_reverb = [MIDI_DEFAULT_REVERB_SEND] * 16
+    cc_chorus = [MIDI_DEFAULT_CHORUS_SEND] * 16
     sustain = [False] * 16
     pitch_value = [0] * 16
     pitch_range = [MIDI_DEFAULT_PITCH_RANGE] * 16
     pitch_semitones = [0.0] * 16
     rpn_msb = [127] * 16
     rpn_lsb = [127] * 16
-    unsupported_effect_cc = set()
+    mid_note_effect_cc = set()
 
     active_voice = [None] * NUM_CHANNELS
     voice_queues = defaultdict(deque)
@@ -909,6 +984,9 @@ def convert_midi_to_it(midi_path, sf2_path=None, output_path=None):
                 cc_volume[ch] = MIDI_DEFAULT_VOLUME
                 cc_expression[ch] = MIDI_DEFAULT_EXPRESSION
                 cc_pan[ch] = MIDI_DEFAULT_PAN
+                cc_modulation[ch] = MIDI_DEFAULT_MODULATION
+                cc_reverb[ch] = MIDI_DEFAULT_REVERB_SEND
+                cc_chorus[ch] = MIDI_DEFAULT_CHORUS_SEND
                 sustain[ch] = False
                 pitch_value[ch] = 0
                 pitch_semitones[ch] = 0.0
@@ -919,10 +997,17 @@ def convert_midi_to_it(midi_path, sf2_path=None, output_path=None):
             elif ctl == 6 and rpn_msb[ch] == 0 and rpn_lsb[ch] == 0:
                 pitch_range[ch] = max(0.0, min(float(val), 24.0))
             elif ctl in (1, 91, 93):
-                # IT sample mode has no direct General MIDI modulation/reverb/chorus send.
-                # The SoundFont's default reverb/chorus tail is baked into rendered PCM,
-                # but dynamic send/mod-wheel changes cannot be represented exactly.
-                unsupported_effect_cc.add(ctl)
+                if any(
+                    voice is not None and voice["midi_channel"] == ch
+                    for voice in active_voice
+                ):
+                    mid_note_effect_cc.add(ctl)
+                if ctl == 1:
+                    cc_modulation[ch] = val
+                elif ctl == 91:
+                    cc_reverb[ch] = val
+                else:
+                    cc_chorus[ch] = val
             continue
 
         if msg.type == "pitchwheel":
@@ -958,12 +1043,19 @@ def convert_midi_to_it(midi_path, sf2_path=None, output_path=None):
         bank = _program_bank(bank_msb[ch], bank_lsb[ch], ch)
         prog = programs[ch]
         layer_velocity = _velocity_layer_for(msg.velocity, velocity_layers)
+        modulation = _effect_cc_bucket(cc_modulation[ch], effect_quantum)
+        reverb_send = _effect_cc_bucket(cc_reverb[ch], effect_quantum)
+        chorus_send = _effect_cc_bucket(cc_chorus[ch], effect_quantum)
         if ch == 9:
-            instr_idx = drum_sample_map.get((bank, prog, msg.note, layer_velocity), 1)
+            instr_idx = drum_sample_map.get(
+                (bank, prog, msg.note, layer_velocity, modulation, reverb_send, chorus_send), 1
+            )
             note_to_play = 60
         else:
             best_base = min(base_note_options, key=lambda base: abs(msg.note - base))
-            instr_idx = melodic_sample_map.get((bank, prog, best_base, layer_velocity), 1)
+            instr_idx = melodic_sample_map.get(
+                (bank, prog, best_base, layer_velocity, modulation, reverb_send, chorus_send), 1
+            )
             note_to_play = msg.note - best_base + 60 + int(round(pitch_semitones[ch]))
         note_to_play = max(0, min(119, note_to_play))
 
@@ -1010,13 +1102,13 @@ def convert_midi_to_it(midi_path, sf2_path=None, output_path=None):
             )
             it_pan_state[it_channel] = desired_pan
 
-    if unsupported_effect_cc:
+    if mid_note_effect_cc:
         labels = {1: "CC1 modulation", 91: "CC91 reverb send", 93: "CC93 chorus send"}
-        names = ", ".join(labels[cc] for cc in sorted(unsupported_effect_cc))
+        names = ", ".join(labels[cc] for cc in sorted(mid_note_effect_cc))
         print(
-            "Warning: " + names +
-            " cannot be represented exactly by standard IT sample-mode effects; "
-            "SoundFont default effect tails are baked into the rendered samples."
+            "Warning: mid-note " + names +
+            " automation changes after sample playback has started; the value at each "
+            "note-on is baked through FluidSynth, and later notes use the updated value."
         )
 
     actual_last_row = 0
