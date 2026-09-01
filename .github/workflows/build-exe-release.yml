@@ -2,6 +2,7 @@ name: Build and Release EXE
 
 on:
   push:
+    branches: [main]
 
 permissions:
   contents: write
