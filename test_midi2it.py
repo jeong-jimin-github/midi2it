@@ -96,6 +96,9 @@ class FakeFluidSynth:
         duration_sec=1.0,
         release_sec=0.75,
         normalize=True,
+        modulation=0,
+        reverb_send=40,
+        chorus_send=0,
     ):
         type(self).calls.append(
             {
@@ -106,6 +109,9 @@ class FakeFluidSynth:
                 "duration_sec": duration_sec,
                 "release_sec": release_sec,
                 "normalize": normalize,
+                "modulation": modulation,
+                "reverb_send": reverb_send,
+                "chorus_send": chorus_send,
             }
         )
         return type(self).payload
