@@ -339,7 +339,7 @@ def write_it(
     vols = list(channel_volumes) if channel_volumes is not None else [64] * NUM_CHANNELS
     pans = (pans + [32] * NUM_CHANNELS)[:NUM_CHANNELS]
     vols = (vols + [64] * NUM_CHANNELS)[:NUM_CHANNELS]
-    pans = [max(0, min(int(v) , 64)) for v in pans]
+    pans = [max(0, min(int(v), 64)) for v in pans]
     vols = [max(0, min(int(v), 64)) for v in vols]
 
     with open(filename, "wb") as f:
@@ -710,7 +710,7 @@ def convert_midi_to_it(midi_path, sf2_path=None, output_path=None):
     base_note_options = [36, 60, 84, 108]
     sample_specs, longest_hold = _collect_sample_specs(mid, base_note_options)
     velocity_layers = _choose_velocity_layers(len(sample_specs))
-    print(f"Velocity layers: {', '.join(map(str, velocity_layers)}")
+    print(f"Velocity layers: {', '.join(map(str, velocity_layers))}")
 
     initial_bpm = get_initial_bpm(mid)
     sf2_path = resolve_soundfont(sf2_path)
