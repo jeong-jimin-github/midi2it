@@ -8,9 +8,27 @@
 - CLI and Tkinter GUI with MIDI/SF2 drag-and-drop support
 - SoundFont argument is optional: a GeneralUser GS SF2 is downloaded and cached automatically on first use
 - Explicit custom SF2 SoundFonts are still supported
+- Velocity-aware SoundFont rendering with adaptive velocity layers instead of flattening every note to velocity 127
+- Shared sample-bank normalization, preserving relative SoundFont dynamics while using the available IT headroom
+- Persistent polyphony across IT rows, including MIDI note-off and sustain-pedal handling
+- MIDI CC7 volume, CC11 expression, CC10 pan, bank select (CC0/CC32), program changes, and sustain (CC64)
+- Pitch-bend support, including RPN 0 pitch-bend range, approximated with IT linear pitch slides
 - MIDI time signatures such as 3/4, 6/8 and mid-song time-signature changes are reflected in IT pattern lengths
 - Byte-identical rendered samples are deduplicated to reduce output size
 - Windows EXE releases for both CLI and GUI, with FluidSynth bundled into each EXE
+
+## MIDI fidelity and effects
+
+`midi2it` tries to preserve MIDI performance data within the limits of the Impulse Tracker sample format:
+
+- Note velocity is represented both by velocity-specific SoundFont renders and IT note volume.
+- MIDI channel volume/expression and pan changes are converted to IT channel volume/pan commands.
+- Overlapping notes are assigned persistent IT voices so a later note on the same MIDI channel does not prematurely cut an earlier one.
+- Note-off, sustain pedal, all-notes-off, and all-sounds-off are converted to tracker voice releases/cuts.
+- Pitch bend is approximated at IT row resolution. Tracker pitch slides are discrete, so continuously changing bends cannot be bit-for-bit identical to a MIDI synthesizer.
+- FluidSynth's SoundFont release/effect tail is included in each rendered sample. Dynamic MIDI CC1 modulation, CC91 reverb-send, and CC93 chorus-send changes do not have direct equivalents in standard IT sample mode and therefore cannot be reproduced exactly. The converter reports a warning when those controllers are present.
+
+The SoundFont render is stored as mono PCM for broad Impulse Tracker compatibility; MIDI pan is reconstructed with IT panning rather than relying on a stereo sample.
 
 ## Requirements
 
